@@ -1,0 +1,10 @@
+# Build outputs
+/target/
+/dist/
+*.app/
+
+# Local artifacts
+.DS_Store
+/showcase-out/
+*.beamerx-log
+bench-*.json

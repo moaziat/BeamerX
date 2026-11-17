@@ -1,0 +1,32 @@
+[package]
+name = "beamerx"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Lightweight native visual editor for scientific Beamer presentations"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "clipboard"] }
+egui = { version = "0.37", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+muda = { version = "0.21", default-features = false }
+rfd = { version = "0.18", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi", "std"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+panic = "unwind"
+
+[profile.dev.package."*"]
+# Image decoding and zlib are unbearably slow unoptimized; keep debug builds usable.
+opt-level = 2
