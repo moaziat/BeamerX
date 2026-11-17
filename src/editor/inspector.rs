@@ -4,7 +4,7 @@ use super::canvas::refit_text;
 use super::{Align, Editor, ZOrder};
 use crate::assets::AssetStore;
 use crate::commands::{Command, MergeKey};
-use crate::document::{Color, MAX_FONT_SIZE, MIN_FONT_SIZE, ObjectKind, Rect, ShapeKind, TextAlign, typeset};
+use crate::document::{Color, MAX_FONT_SIZE, MIN_FONT_SIZE, ObjectKind, Rect, ShapeKind, TextAlign};
 use crate::math::{MathService, MathStatus};
 use egui::{Color32, DragValue, RichText, Ui};
 use std::time::Instant;
@@ -132,7 +132,7 @@ fn slide_and_document(ui: &mut Ui, ed: &mut Editor, math: &mut MathService) {
         math.retry_failed();
     }
     ui.add_space(8.0);
-    ui.label(RichText::new("Tip: drop PNG/JPEG files from Finder onto the slide. Double-click text to edit; Enter edits the selected equation.").small().weak());
+    ui.label(RichText::new("Tip: type directly on the slide — click a selected text box (or just start typing) to edit it in place. Drop PNG/JPEG files from Finder onto the slide. Enter edits the selected equation.").small().weak());
 }
 
 fn geometry(ui: &mut Ui, rect: &mut Rect, w_enabled: bool, h_enabled: bool) {
@@ -344,14 +344,15 @@ fn single(ui: &mut Ui, ed: &mut Editor, math: &mut MathService, assets: &AssetSt
         _ => (true, true),
     };
     geometry(ui, &mut rect, w_ok, h_ok);
-    let rect = refit_text(ui.painter(), &kind, rect.sanitized());
+    // Only user edits produce commands; merely showing the inspector must
+    // never modify the document.
     if kind != obj.kind || rect != obj.rect {
+        let rect = refit_text(ui.painter(), &kind, rect.sanitized());
         // Typing merges into one undo step; other edits merge per field burst.
         let field = if focus_text { 0 } else { 1 };
         ed.set_object(id, kind, rect, Some(MergeKey::Object(id, field)));
     }
     arrange(ui, ed);
-    let _ = typeset::LINE_SPREAD;
 }
 
 fn arrange(ui: &mut Ui, ed: &mut Editor) {

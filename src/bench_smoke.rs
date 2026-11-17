@@ -36,11 +36,13 @@ pub struct Report {
     pub failed: usize,
 }
 
-const STEPS: [&str; 16] = [
+const STEPS: [&str; 19] = [
     "warmup",
     "create_text_by_click",
     "type_text",
     "finish_editing",
+    "type_on_selected_text",
+    "click_selected_text_to_edit",
     "insert_equation_typeset",
     "insert_shape",
     "drag_text",
@@ -50,6 +52,7 @@ const STEPS: [&str; 16] = [
     "new_slide",
     "save",
     "reopen",
+    "select_without_edit",
     "export_beamer",
     "export_pdf",
     "present",
@@ -108,15 +111,15 @@ impl Smoke {
             Some(v) => v,
             None => return Poll::Wait,
         };
-        match self.step {
-            0 => {
+        match STEPS[self.step] {
+            "warmup" => {
                 if sub > 10 {
                     Poll::Done
                 } else {
                     Poll::Wait
                 }
             }
-            1 => {
+            "create_text_by_click" => {
                 let p = view.pt(60.0, 60.0);
                 match sub {
                     0 => {
@@ -147,7 +150,7 @@ impl Smoke {
                 }
                 Poll::Wait
             }
-            2 => {
+            "type_text" => {
                 let Some(id) = self.text_id else {
                     return Poll::Fail("needs step 1".into());
                 };
@@ -171,7 +174,7 @@ impl Smoke {
                     _ => Poll::Wait,
                 }
             }
-            3 => {
+            "finish_editing" => {
                 if sub == 0 {
                     app.inject_events().push(key(Key::Escape, true));
                     return Poll::Wait;
@@ -192,7 +195,99 @@ impl Smoke {
                     Poll::Wait
                 }
             }
-            4 => {
+            "type_on_selected_text" => {
+                // With the box selected (not editing), just typing edits it
+                // in place on the slide.
+                let Some(id) = self.text_id else {
+                    return Poll::Fail("needs step 1".into());
+                };
+                match sub {
+                    0 => {
+                        app.ed.selection = vec![id];
+                        app.ed.editing_text = None;
+                    }
+                    1 => app.inject_events().push(Event::Text("!".into())),
+                    2 => {}
+                    3 => {
+                        if app.ed.editing_text != Some(id) {
+                            return Poll::Fail("typing did not start in-place editing".into());
+                        }
+                        app.inject_events().push(key(Key::Escape, true));
+                    }
+                    4 => app.inject_events().push(key(Key::Escape, false)),
+                    _ => {
+                        return match app.ed.object(id).map(|o| &o.kind) {
+                            Some(ObjectKind::Text(t))
+                                if t.text == "Hello BeamerX!" && app.ed.editing_text.is_none() =>
+                            {
+                                Poll::Done
+                            }
+                            Some(ObjectKind::Text(t)) if sub > 20 => Poll::Fail(format!("text is {:?}", t.text)),
+                            _ if sub > 20 => Poll::Fail("text object missing".into()),
+                            _ => Poll::Wait,
+                        };
+                    }
+                }
+                Poll::Wait
+            }
+            "click_selected_text_to_edit" => {
+                let Some(id) = self.text_id else {
+                    return Poll::Fail("needs step 1".into());
+                };
+                let Some(r) = app.ed.object(id).map(|o| o.rect) else {
+                    return Poll::Fail("text gone".into());
+                };
+                let p = view.pt(r.x + 4.0, r.y + r.h * 0.5);
+                match sub {
+                    0 => {
+                        app.ed.selection = vec![id];
+                        app.inject_events().push(Event::PointerMoved(p));
+                    }
+                    1 => app.inject_events().push(Event::PointerButton {
+                        pos: p,
+                        button: PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Modifiers::NONE,
+                    }),
+                    2 => app.inject_events().push(Event::PointerButton {
+                        pos: p,
+                        button: PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Modifiers::NONE,
+                    }),
+                    3..=8 => {}
+                    9 => {
+                        if app.ed.editing_text != Some(id) || !ctx.text_edit_focused() {
+                            return Poll::Fail("click on selected text did not start focused editing".into());
+                        }
+                        // Typed at the click position (near the start).
+                        app.inject_events().push(Event::Text("X".into()));
+                    }
+                    10 => app.inject_events().push(key(Key::Escape, true)),
+                    11 => app.inject_events().push(key(Key::Escape, false)),
+                    _ => {
+                        return match app.ed.object(id).map(|o| &o.kind) {
+                            Some(ObjectKind::Text(t)) if t.text.chars().count() == "Hello BeamerX!".len() + 1 => {
+                                // The caret was placed at the click (start of
+                                // the box), not at the end.
+                                if !t.text.chars().take(2).any(|c| c == 'X') {
+                                    return Poll::Fail(format!("caret not at click position: {:?}", t.text));
+                                }
+                                let mut t = t.clone();
+                                t.text = "Hello BeamerX".into();
+                                let rect = app.ed.object(id).map(|o| o.rect).unwrap_or_default();
+                                app.ed.set_object(id, ObjectKind::Text(t), rect, None);
+                                Poll::Done
+                            }
+                            Some(ObjectKind::Text(t)) if sub > 30 => Poll::Fail(format!("text is {:?}", t.text)),
+                            _ if sub > 30 => Poll::Fail("text object missing".into()),
+                            _ => Poll::Wait,
+                        };
+                    }
+                }
+                Poll::Wait
+            }
+            "insert_equation_typeset" => {
                 if sub == 0 {
                     app.on_action(MenuAction::InsertEquation);
                     let id = app.ed.selection[0];
@@ -216,7 +311,7 @@ impl Smoke {
                     _ => Poll::Wait,
                 }
             }
-            5 => {
+            "insert_shape" => {
                 let n = app.ed.slide().objects.len();
                 app.on_action(MenuAction::InsertRectangle);
                 if app.ed.slide().objects.len() == n + 1 {
@@ -225,7 +320,7 @@ impl Smoke {
                     Poll::Fail("rectangle not inserted".into())
                 }
             }
-            6 => {
+            "drag_text" => {
                 let Some(id) = self.text_id else {
                     return Poll::Fail("needs step 1".into());
                 };
@@ -278,7 +373,7 @@ impl Smoke {
                 }
                 Poll::Wait
             }
-            7 => {
+            "undo_redo" => {
                 let Some(id) = self.text_id else {
                     return Poll::Fail("needs step 1".into());
                 };
@@ -298,7 +393,7 @@ impl Smoke {
                     Poll::Fail(format!("undo {undone:?} redo {redone:?}"))
                 }
             }
-            8 => {
+            "copy_paste_delete" => {
                 let Some(id) = self.text_id else {
                     return Poll::Fail("needs step 1".into());
                 };
@@ -316,7 +411,7 @@ impl Smoke {
                     Poll::Fail(format!("{n} -> paste {after_paste} -> delete {after_delete}"))
                 }
             }
-            9 => {
+            "import_image" => {
                 if sub == 0 {
                     self.count_before = app.ed.slide().objects.len();
                     let img =
@@ -338,7 +433,7 @@ impl Smoke {
                     Poll::Wait
                 }
             }
-            10 => {
+            "new_slide" => {
                 app.on_action(MenuAction::NewSlide);
                 let ok = app.ed.doc.slides.len() == 2 && app.ed.current == 1;
                 app.on_action(MenuAction::InsertArrow);
@@ -349,7 +444,7 @@ impl Smoke {
                     Poll::Fail("new slide not created/selected".into())
                 }
             }
-            11 => {
+            "save" => {
                 let p = work.join("smoke.beamerx");
                 if sub == 0 {
                     app.start_save(p, false);
@@ -362,7 +457,7 @@ impl Smoke {
                     Poll::Wait
                 }
             }
-            12 => {
+            "reopen" => {
                 let p = work.join("smoke.beamerx");
                 if sub == 0 {
                     app.new_document();
@@ -381,7 +476,22 @@ impl Smoke {
                     Poll::Fail("reopened document differs from saved one".into())
                 }
             }
-            13 => {
+            "select_without_edit" => {
+                // Selecting objects shows the inspector; that must not edit.
+                let ids: Vec<_> = app.ed.slide().objects.iter().map(|o| o.id).collect();
+                let i = (sub / 3) as usize;
+                if let Some(id) = ids.get(i) {
+                    app.ed.selection = vec![*id];
+                    return Poll::Wait;
+                }
+                app.ed.selection.clear();
+                if !app.ed.is_dirty() && !app.ed.history.can_undo() {
+                    Poll::Done
+                } else {
+                    Poll::Fail(format!("document became dirty ({} undo entries)", app.ed.history.len()))
+                }
+            }
+            "export_beamer" => {
                 let dir = work.join("smoke-beamer");
                 if sub == 0 {
                     app.start_export(dir, false);
@@ -397,7 +507,7 @@ impl Smoke {
                     Poll::Fail(format!("main.tex or images missing ({n_img})"))
                 }
             }
-            14 => {
+            "export_pdf" => {
                 let pdf = work.join("smoke.pdf");
                 if sub == 0 {
                     app.start_export(pdf, true);
@@ -415,7 +525,7 @@ impl Smoke {
                     None => Poll::Fail("no PDF produced".into()),
                 }
             }
-            15 => {
+            "present" => {
                 match sub {
                     0 => app.start_presenting(),
                     5 => app.inject_events().push(key(Key::ArrowRight, true)),

@@ -138,8 +138,9 @@ pub fn paint_slide(p: &Painter, view: &View, slide: &Slide, sv: &mut Services, o
     let clip = p.clip_rect().intersect(area);
     let p = p.with_clip_rect(clip);
     for o in &slide.objects {
-        let r = view.rect(&o.rect).expand(4.0 + o.rect.w.max(o.rect.h) * 0.0);
-        // Cull objects far outside the visible clip (keep lines' stroke margin).
+        // Cull objects outside the visible clip. The margin covers strokes
+        // and arrow heads; text may overflow its box, so it is never culled.
+        let r = view.rect(&o.rect);
         if !clip.expand(16.0).intersects(r) && !matches!(o.kind, ObjectKind::Text(_)) {
             continue;
         }
@@ -243,7 +244,7 @@ pub fn paint_text(p: &Painter, view: &View, r: &Rect, t: &TextBox, hints: bool) 
             p.text(
                 origin + vec2(0.0, size * 0.1),
                 egui::Align2::LEFT_TOP,
-                "Double-click to type",
+                "Click to type",
                 FontId::new(size, text_family(false, true)),
                 Color32::from_gray(150),
             );

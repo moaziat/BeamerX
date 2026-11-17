@@ -64,6 +64,8 @@ pub struct CanvasState {
     edit_for: Option<ObjectId>,
     /// Frames since in-place editing started.
     edit_age: u32,
+    /// Where to put the caret when in-place editing starts.
+    caret: Caret,
     /// Last view used, for drop-position mapping and bench drivers.
     pub last_view: Option<View>,
     /// Pointer position over the slide (slide space), if hovering.
@@ -74,6 +76,22 @@ impl CanvasState {
     pub fn is_gesturing(&self) -> bool {
         self.gesture.is_some()
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Caret {
+    #[default]
+    End,
+    /// Screen position of the click that started editing.
+    At(Pos2),
+}
+
+/// Start in-place editing of a text object.
+fn begin_text_edit(ed: &mut Editor, st: &mut CanvasState, id: ObjectId, caret: Caret) {
+    ed.selection = vec![id];
+    ed.editing_text = Some(id);
+    st.edit_for = None;
+    st.caret = caret;
 }
 
 /// Requests from the canvas to the application.
@@ -358,7 +376,33 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
 
     // ---- keyboard ----------------------------------------------------------
     let text_focus = ui.ctx().text_edit_focused();
-    if !text_focus && editing.is_none() && st.gesture.is_none() {
+    // A single selected text box captures typing: letters go into the box on
+    // the slide instead of triggering tool shortcuts.
+    let selected_text = match ed.selection.as_slice() {
+        [id] if matches!(ed.object(*id).map(|o| &o.kind), Some(ObjectKind::Text(_))) => Some(*id),
+        _ => None,
+    };
+    if !text_focus
+        && editing.is_none()
+        && st.gesture.is_none()
+        && let Some(id) = selected_text
+    {
+        let typed: String = ui.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect()
+        });
+        if !typed.is_empty() {
+            // The in-place editor is created and focused later this frame,
+            // so it receives these same keystrokes itself.
+            begin_text_edit(ed, st, id, Caret::End);
+        }
+    }
+    if !text_focus && ed.editing_text.is_none() && st.gesture.is_none() {
         let (mods, keys) = ui.input(|i| {
             let keys: Vec<Key> = [
                 Key::Delete,
@@ -385,7 +429,7 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
         });
         let step = if mods.shift { 10.0 } else { 1.0 };
         for k in keys {
-            let plain = !mods.command && !mods.alt && !mods.ctrl;
+            let plain = !mods.command && !mods.alt && !mods.ctrl && selected_text.is_none();
             match k {
                 Key::Delete | Key::Backspace => ed.delete_selection(),
                 Key::ArrowLeft => ed.nudge(-step, 0.0),
@@ -400,7 +444,7 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
                     }
                 }
                 Key::Enter if ed.selection.len() == 1 => match ed.object(ed.selection[0]).map(|o| &o.kind) {
-                    Some(ObjectKind::Text(_)) => ed.editing_text = Some(ed.selection[0]),
+                    Some(ObjectKind::Text(_)) => begin_text_edit(ed, st, ed.selection[0], Caret::End),
                     Some(ObjectKind::Equation(_)) => ed.focus_source = true,
                     _ => {}
                 },
@@ -654,6 +698,9 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
                             ed.selection.push(id);
                         }
                     }
+                    Some(id) if ed.selection == [id] && editing.is_none() && is_text(ed, id) => {
+                        begin_text_edit(ed, st, id, Caret::At(p));
+                    }
                     Some(id) => ed.selection = vec![id],
                     None => ed.selection.clear(),
                 }
@@ -668,7 +715,7 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
     {
         ed.selection = vec![id];
         match ed.object(id).map(|o| &o.kind) {
-            Some(ObjectKind::Text(_)) => ed.editing_text = Some(id),
+            Some(ObjectKind::Text(_)) => begin_text_edit(ed, st, id, Caret::At(p)),
             Some(ObjectKind::Equation(_)) => ed.focus_source = true,
             _ => {}
         }
@@ -823,6 +870,10 @@ fn create_object(ed: &mut Editor, p: &egui::Painter, tool: Tool, start: (f32, f3
     }
 }
 
+fn is_text(ed: &Editor, id: ObjectId) -> bool {
+    matches!(ed.object(id).map(|o| &o.kind), Some(ObjectKind::Text(_)))
+}
+
 fn finish_text_edit(ed: &mut Editor, st: &mut CanvasState) {
     if let Some(id) = ed.editing_text.take() {
         ed.history.seal();
@@ -849,10 +900,17 @@ fn inline_text_editor(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, view: 
         return;
     };
     let te_id = egui::Id::unique(("inline-text", id.0));
-    if st.edit_for != Some(id) {
+    let first_frame = st.edit_for != Some(id);
+    if first_frame {
         st.edit_for = Some(id);
         st.edit_age = 0;
         st.edit_buffer = t.text.clone();
+        // Start with the caret at the end (a stale state from an earlier
+        // edit of this box must not decide where typing goes).
+        let mut state = egui::text_edit::TextEditState::load(ui.ctx(), te_id).unwrap_or_default();
+        let end = egui::text::CCursor::new(st.edit_buffer.chars().count());
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+        state.store(ui.ctx(), te_id);
     } else {
         st.edit_age = st.edit_age.saturating_add(1);
         if st.edit_buffer != t.text {
@@ -887,19 +945,45 @@ fn inline_text_editor(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, view: 
     let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
         ui.painter().layout_job(text_job(buf.as_str(), &tb, scale, wrap))
     };
+    // Make the editing state obvious on the slide: an accent outline around
+    // the box and a caret that contrasts with the slide background (egui's
+    // default caret is light in dark mode and invisible on a white slide).
+    let bg = ed.slide().background;
+    let light_bg = 0.299 * f32::from(bg.r) + 0.587 * f32::from(bg.g) + 0.114 * f32::from(bg.b) > 140.0;
+    let caret_color = if light_bg {
+        Color32::from_gray(15)
+    } else {
+        Color32::WHITE
+    };
+    let mut outline = view.rect(&obj.rect);
+    outline.max.y = outline.max.y.max(outline.min.y + size * typeset::LINE_SPREAD);
+    ui.painter()
+        .rect_stroke(outline.expand(3.0), 2.0, Stroke::new(1.5, ACCENT), StrokeKind::Outside);
+
     let mut buf = std::mem::take(&mut st.edit_buffer);
     let out = ui
         .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+            let v = ui.visuals_mut();
+            v.text_cursor.stroke = Stroke::new(2.0, caret_color);
+            v.selection.bg_fill = Color32::from_rgba_unmultiplied(10, 132, 255, 80);
             egui::TextEdit::multiline(&mut buf)
                 .id(te_id)
                 .frame(egui::Frame::NONE)
                 .margin(egui::Margin::ZERO)
                 .desired_width(width)
                 .desired_rows(1)
+                .hint_text("Type here")
                 .layouter(&mut layouter)
                 .show(ui)
         })
         .inner;
+    if first_frame && let Caret::At(p) = st.caret {
+        // Put the caret where the user clicked.
+        let c = out.galley.cursor_from_pos(p - out.galley_pos);
+        let mut state = egui::text_edit::TextEditState::load(ui.ctx(), te_id).unwrap_or_default();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
+        state.store(ui.ctx(), te_id);
+    }
     // Bullets beside each paragraph's first row.
     if t.bullets {
         let mut para_start = true;

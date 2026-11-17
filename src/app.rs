@@ -883,7 +883,7 @@ impl BeamerApp {
             let tool = self.ed.tool;
             let tools: [(&str, &str, Tool); 7] = [
                 ("Select", "Select and move (V)", Tool::Select),
-                ("Text", "Text box (T)", Tool::Text),
+                ("Text", "Text box (T): click on the slide and type", Tool::Text),
                 ("Equation", "LaTeX equation (E)", Tool::Equation),
                 ("Rect", "Rectangle (R)", Tool::Shape(ShapeKind::Rectangle)),
                 ("Ellipse", "Ellipse (O)", Tool::Shape(ShapeKind::Ellipse)),
