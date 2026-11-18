@@ -26,7 +26,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 pub const FORMAT_NAME: &str = "beamerx";
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 pub const MIMETYPE: &str = "application/x-beamerx";
 pub const EXTENSION: &str = "beamerx";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -150,6 +150,12 @@ fn migrate(mut v: Value) -> Result<Value> {
     if ver == 2 {
         migrate_v2_to_v3(&mut v);
         ver = 3;
+    }
+    if ver == 3 {
+        if let Some(document) = v.get_mut("document").and_then(Value::as_object_mut) {
+            document.entry("sections").or_insert_with(|| Value::Array(Vec::new()));
+        }
+        ver = 4;
     }
     v["format_version"] = ver.into();
     Ok(v)
@@ -508,5 +514,15 @@ mod tests {
         }
         assert_eq!((eq.rect.x, eq.rect.y), (20.0, 70.0));
         assert!(eq.rect.w > 120.0);
+    }
+
+    #[test]
+    fn frozen_v3_fixture_still_loads_without_sections() {
+        let bytes = include_bytes!("../tests/fixtures/project_v3.json");
+        let (doc, assets) = parse_manifest(bytes).unwrap();
+        assert_eq!(doc.meta.title, "Legacy v3 deck");
+        assert_eq!(doc.slides.len(), 1);
+        assert!(doc.sections.is_empty());
+        assert!(assets.is_empty());
     }
 }

@@ -1082,6 +1082,12 @@ impl BeamerApp {
             });
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
+                if icons::small(ui, Icon::Section, "")
+                    .on_hover_text("Add section before the current slide")
+                    .clicked()
+                {
+                    self.ed.add_section_before(self.ed.current);
+                }
                 if icons::small(ui, Icon::Duplicate, "")
                     .on_hover_text("Duplicate slide")
                     .clicked()
@@ -1837,6 +1843,12 @@ impl eframe::App for BeamerApp {
                                 .clicked()
                             {
                                 ed.new_slide();
+                            }
+                            if icons::small(ui, Icon::Section, "")
+                                .on_hover_text("Add section before the current slide")
+                                .clicked()
+                            {
+                                ed.add_section_before(ed.current);
                             }
                         });
                     });

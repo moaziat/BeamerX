@@ -4,7 +4,7 @@
 //! single [`Command::SetRects`] holding before/after rectangles, never as a
 //! sequence of document snapshots.
 
-use crate::document::{Color, DocMeta, Document, Object, ObjectId, ObjectKind, Rect, Slide, SlideId};
+use crate::document::{Color, DocMeta, Document, Object, ObjectId, ObjectKind, Rect, Section, Slide, SlideId};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -58,6 +58,11 @@ pub enum Command {
     SetMeta {
         before: DocMeta,
         after: DocMeta,
+    },
+    SetSections {
+        before: Vec<Section>,
+        after: Vec<Section>,
+        focus: Option<SlideId>,
     },
     Batch(Vec<Command>),
 }
@@ -172,6 +177,17 @@ impl Command {
                 doc.meta = after.clone();
                 Ok(())
             }
+            Command::SetSections { after, .. } => {
+                let mut starts = std::collections::HashSet::new();
+                if after
+                    .iter()
+                    .any(|section| doc.slide(section.start).is_none() || !starts.insert(section.start))
+                {
+                    return err("section anchor is missing or duplicated");
+                }
+                doc.sections = after.clone();
+                Ok(())
+            }
             Command::Batch(cmds) => {
                 for (n, c) in cmds.iter().enumerate() {
                     if let Err(e) = c.apply(doc) {
@@ -235,6 +251,11 @@ impl Command {
                 before: after.clone(),
                 after: before.clone(),
             },
+            Command::SetSections { before, after, focus } => Command::SetSections {
+                before: after.clone(),
+                after: before.clone(),
+                focus: *focus,
+            },
             Command::Batch(cmds) => Command::Batch(cmds.iter().rev().map(Command::inverse).collect()),
         }
     }
@@ -249,6 +270,7 @@ impl Command {
             | Command::MoveObject { slide, .. }
             | Command::SetBackground { slide, .. } => Some(*slide),
             Command::InsertSlide { slide, .. } | Command::RemoveSlide { slide, .. } => Some(slide.id),
+            Command::SetSections { focus, .. } => *focus,
             Command::Batch(c) => c.iter().find_map(Command::affected_slide),
             Command::MoveSlide { .. } | Command::SetMeta { .. } => None,
         }
@@ -267,6 +289,11 @@ impl Command {
             Command::SetMeta { before, after } => {
                 before.title.len() + before.preamble.len() + after.title.len() + after.preamble.len()
             }
+            Command::SetSections { before, after, .. } => before
+                .iter()
+                .chain(after)
+                .map(|section| std::mem::size_of::<Section>() + section.name.len())
+                .sum(),
             Command::Batch(c) => c.iter().map(Command::approx_bytes).sum(),
             _ => 0,
         }
@@ -280,6 +307,7 @@ pub enum MergeKey {
     Object(ObjectId, u8),
     Meta(u8),
     Background(SlideId),
+    Sections,
 }
 
 struct Entry {
@@ -480,6 +508,18 @@ fn merge(prev: &Command, next: &Command) -> Option<Command> {
         (Command::SetMeta { before, .. }, Command::SetMeta { after, .. }) => Some(Command::SetMeta {
             before: before.clone(),
             after: after.clone(),
+        }),
+        (
+            Command::SetSections { before, focus, .. },
+            Command::SetSections {
+                after,
+                focus: next_focus,
+                ..
+            },
+        ) if focus == next_focus => Some(Command::SetSections {
+            before: before.clone(),
+            after: after.clone(),
+            focus: *focus,
         }),
         (Command::SetBackground { slide, before, .. }, Command::SetBackground { slide: s2, after, .. })
             if slide == s2 =>

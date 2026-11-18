@@ -13,7 +13,7 @@ pub mod text_edit;
 
 use crate::commands::{Command, History, MergeKey};
 use crate::document::{
-    Document, Object, ObjectId, ObjectKind, Rect, SLIDE_H, SLIDE_W, Shape, ShapeKind, Slide, SlideId, TextBox,
+    Document, Object, ObjectId, ObjectKind, Rect, SLIDE_H, SLIDE_W, Section, Shape, ShapeKind, Slide, SlideId, TextBox,
 };
 use std::path::PathBuf;
 
@@ -568,9 +568,37 @@ impl Editor {
         }
         let index = self.current;
         let slide = self.slide().clone();
+        let before_sections = self.doc.sections.clone();
+        let mut after_sections = before_sections.clone();
+        let replacement = self.doc.slides.get(index + 1).map(|next| next.id);
+        let replacement_has_section =
+            replacement.is_some_and(|id| after_sections.iter().any(|section| section.start == id));
+        after_sections.retain_mut(|section| {
+            if section.start != slide.id {
+                return true;
+            }
+            if let Some(next) = replacement.filter(|_| !replacement_has_section) {
+                section.start = next;
+                true
+            } else {
+                false
+            }
+        });
         self.selection.clear();
         self.editing_text = None;
-        self.exec(Command::RemoveSlide { index, slide });
+        let remove = Command::RemoveSlide { index, slide };
+        if before_sections == after_sections {
+            self.exec(remove);
+        } else {
+            self.exec(Command::Batch(vec![
+                Command::SetSections {
+                    before: before_sections,
+                    after: after_sections,
+                    focus: replacement,
+                },
+                remove,
+            ]));
+        }
         self.current = index.min(self.doc.slides.len() - 1);
     }
 
@@ -580,6 +608,69 @@ impl Editor {
         }
         self.exec(Command::MoveSlide { from, to });
         self.current = to;
+    }
+
+    /// Add a named section immediately before `index`.
+    pub fn add_section_before(&mut self, index: usize) -> Option<SlideId> {
+        let start = self.doc.slides.get(index)?.id;
+        if self.doc.section_before(start).is_some() {
+            return None;
+        }
+        let before = self.doc.sections.clone();
+        let mut after = before.clone();
+        let mut number = after.len() + 1;
+        let name = loop {
+            let candidate = format!("Section {number}");
+            if after.iter().all(|section| section.name != candidate) {
+                break candidate;
+            }
+            number += 1;
+        };
+        after.push(Section { name, start });
+        after.sort_by_key(|section| self.doc.slide_index(section.start).unwrap_or(usize::MAX));
+        self.exec(Command::SetSections {
+            before,
+            after,
+            focus: Some(start),
+        });
+        Some(start)
+    }
+
+    pub fn rename_section(&mut self, start: SlideId, name: &str) {
+        let name: String = name.trim().chars().take(200).collect();
+        if name.is_empty() {
+            return;
+        }
+        let before = self.doc.sections.clone();
+        let mut after = before.clone();
+        let Some(section) = after.iter_mut().find(|section| section.start == start) else {
+            return;
+        };
+        if section.name == name {
+            return;
+        }
+        section.name = name;
+        self.exec_merging(
+            Command::SetSections {
+                before,
+                after,
+                focus: Some(start),
+            },
+            Some(MergeKey::Sections),
+        );
+    }
+
+    pub fn remove_section(&mut self, start: SlideId) {
+        let before = self.doc.sections.clone();
+        let mut after = before.clone();
+        after.retain(|section| section.start != start);
+        if before != after {
+            self.exec(Command::SetSections {
+                before,
+                after,
+                focus: Some(start),
+            });
+        }
     }
 
     pub fn set_tool(&mut self, tool: Tool) {
@@ -724,6 +815,42 @@ mod tests {
         assert_eq!(e.doc.slides.len(), 1);
         assert!(e.doc.slides[0].objects.is_empty());
         assert!(!e.is_dirty());
+    }
+
+    #[test]
+    fn sections_rename_and_follow_slide_deletion() {
+        let mut e = Editor::new(Document::new(), None);
+        e.new_slide();
+        e.new_slide();
+        let start = e.doc.slides[1].id;
+        let replacement = e.doc.slides[2].id;
+        assert_eq!(e.add_section_before(1), Some(start));
+        e.rename_section(start, "Results");
+        assert_eq!(
+            e.doc.section_before(start).map(|section| section.name.as_str()),
+            Some("Results")
+        );
+
+        e.go_to_slide(1);
+        e.delete_slide();
+        assert!(e.doc.section_before(start).is_none());
+        assert_eq!(
+            e.doc.section_before(replacement).map(|section| section.name.as_str()),
+            Some("Results")
+        );
+
+        e.undo();
+        assert_eq!(
+            e.doc.section_before(start).map(|section| section.name.as_str()),
+            Some("Results")
+        );
+        assert!(e.doc.section_before(replacement).is_none());
+        e.redo();
+        assert!(e.doc.section_before(start).is_none());
+        assert_eq!(
+            e.doc.section_before(replacement).map(|section| section.name.as_str()),
+            Some("Results")
+        );
     }
 
     #[test]

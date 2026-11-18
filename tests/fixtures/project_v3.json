@@ -1,0 +1,21 @@
+{
+  "format": "beamerx",
+  "format_version": 3,
+  "app_version": "0.1.0",
+  "document": {
+    "meta": {
+      "title": "Legacy v3 deck",
+      "author": "",
+      "preamble": ""
+    },
+    "slides": [
+      {
+        "id": 1,
+        "objects": [],
+        "background": "#ffffff"
+      }
+    ],
+    "next_id": 2
+  },
+  "assets": []
+}

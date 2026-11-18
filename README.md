@@ -83,6 +83,9 @@ optional pane with exact position, size, colours and picture details.
   *Arrange*; `⌘C`/`⌘X`/`⌘V`/`⌘D`; `⌫` deletes; undo/redo `⌘Z`/`⇧⌘Z`.
 * **Slides** — *Home › New Slide*, or thumbnails: click to select, drag to
   reorder, right-click for new/duplicate/delete.
+* **Sections** — add a named divider before the current slide from the Slides
+  pane or a slide's context menu. Click a section header to collapse/expand;
+  right-click it to rename or remove it. Sections are included in Beamer export.
 * **View** — pinch or `⌘`-scroll to zoom around the pointer, scroll to pan,
   space-drag to pan, zoom slider bottom right, `⌘0` fit.
 * **Present** — *Present* (top right), *Slide Show › From Beginning*, or
@@ -99,8 +102,8 @@ A ZIP container: `mimetype`, a versioned `project.json` (document + asset
 manifest) and the **original image bytes** under `assets/<sha256>.<ext>`
 (stored, not recompressed, de-duplicated by content hash). No base64 in JSON.
 Saves are atomic (temp file → fsync → rename); a failed save never damages the
-previous file. Format 3 stores character formats as spans and paragraph
-formats (style, list, level) per line. Older files are migrated on open:
+previous file. Format 4 adds named slide sections; format 3 stores character
+formats as spans and paragraph formats (style, list, level) per line. Older files are migrated on open:
 format-1 equation objects become text boxes containing `$\displaystyle …$`,
 and format-2 box-wide bullets become per-paragraph bullets. Loading validates structure, bounds sizes, never uses archive
 entry names as paths, and verifies every image against its hash. Format

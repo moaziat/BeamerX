@@ -11,6 +11,7 @@ pub enum Icon {
     Cut,
     Copy,
     NewSlide,
+    Section,
     Layout,
     Duplicate,
     Delete,
@@ -87,6 +88,12 @@ pub fn paint(p: &Painter, r: Rect, icon: Icon, c: Color32) {
             p.rect_stroke(rect(0.08, 0.22, 0.78, 0.74), 2.0, st, egui::StrokeKind::Middle);
             line(at(0.78, 0.66), at(0.78, 0.96));
             line(at(0.63, 0.81), at(0.93, 0.81));
+        }
+        Icon::Section => {
+            p.rect_stroke(rect(0.12, 0.08, 0.88, 0.38), 1.5, st, egui::StrokeKind::Middle);
+            p.rect_stroke(rect(0.12, 0.62, 0.88, 0.92), 1.5, st, egui::StrokeKind::Middle);
+            line(at(0.12, 0.5), at(0.62, 0.5));
+            p.circle_filled(at(0.82, 0.5), s * 0.08, c);
         }
         Icon::Layout => {
             p.rect_stroke(rect(0.1, 0.2, 0.9, 0.8), 2.0, st, egui::StrokeKind::Middle);
@@ -352,6 +359,7 @@ fn accessible_name(icon: Icon) -> &'static str {
         Icon::Cut => "Cut",
         Icon::Copy => "Copy",
         Icon::NewSlide => "New slide",
+        Icon::Section => "Section",
         Icon::Layout => "Layout",
         Icon::Duplicate => "Duplicate",
         Icon::Delete => "Delete",

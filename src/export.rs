@@ -513,6 +513,9 @@ pub fn generate_tex(doc: &Document, assets: &HashMap<AssetId, String>) -> String
     }
     t.push_str("\\begin{document}\n");
     for (n, slide) in doc.slides.iter().enumerate() {
+        if let Some(section) = doc.section_before(slide.id) {
+            let _ = writeln!(t, "\\section{{{}}}", escape_text(&section.name));
+        }
         let _ = writeln!(t, "% ---------------- slide {} ----------------", n + 1);
         t.push_str("{\n");
         let _ = writeln!(
@@ -793,5 +796,23 @@ mod tests {
         assert!(!tex.contains("includegraphics"));
         assert_eq!(tex.matches("\\begin{frame}").count(), 1);
         assert!(tex.trim_end().ends_with("\\end{document}"));
+    }
+
+    #[test]
+    fn sections_export_before_their_start_slide() {
+        let mut doc = Document::new();
+        let first = doc.slides[0].id;
+        let second = doc.alloc_slide_id();
+        doc.slides.push(Slide::new(second));
+        doc.sections.push(Section {
+            name: "Results & discussion".into(),
+            start: second,
+        });
+        let tex = generate_tex(&doc, &HashMap::new());
+        let section = tex.find("\\section{Results \\& discussion}").unwrap();
+        let first_frame = tex.find("% ---------------- slide 1").unwrap();
+        let second_frame = tex.find("% ---------------- slide 2").unwrap();
+        assert!(first_frame < section && section < second_frame);
+        assert!(doc.section_before(first).is_none());
     }
 }

@@ -813,10 +813,20 @@ pub struct DocMeta {
     pub preamble: String,
 }
 
+/// A named divider anchored immediately before a slide. Anchoring by slide
+/// id keeps the divider attached when slides are reordered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Section {
+    pub name: String,
+    pub start: SlideId,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     pub meta: DocMeta,
     pub slides: Vec<Slide>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<Section>,
     /// Next free id for slides and objects (shared counter).
     pub next_id: u64,
 }
@@ -836,6 +846,7 @@ impl Document {
                 ..Default::default()
             },
             slides: Vec::new(),
+            sections: Vec::new(),
             next_id: 1,
         };
         let id = d.alloc_slide_id();
@@ -863,6 +874,10 @@ impl Document {
     }
     pub fn slide_mut(&mut self, id: SlideId) -> Option<&mut Slide> {
         self.slides.iter_mut().find(|s| s.id == id)
+    }
+
+    pub fn section_before(&self, slide: SlideId) -> Option<&Section> {
+        self.sections.iter().find(|s| s.start == slide)
     }
 
     pub fn object_count(&self) -> usize {
@@ -949,6 +964,24 @@ impl Document {
                 }
             }
         }
+        let slide_order: std::collections::HashMap<SlideId, usize> = self
+            .slides
+            .iter()
+            .enumerate()
+            .map(|(index, slide)| (slide.id, index))
+            .collect();
+        let mut section_starts = HashSet::new();
+        self.sections.retain_mut(|section| {
+            if !slide_order.contains_key(&section.start) || !section_starts.insert(section.start) {
+                return false;
+            }
+            section.name = section.name.trim().chars().take(200).collect();
+            if section.name.is_empty() {
+                section.name = "Untitled Section".into();
+            }
+            true
+        });
+        self.sections.sort_by_key(|section| slide_order[&section.start]);
         if self.next_id <= max_id {
             self.next_id = max_id + 1;
         }
@@ -1005,6 +1038,29 @@ mod tests {
             let r = s.set_endpoints(a, b);
             assert_eq!(s.endpoints(&r), (a, b), "{a:?} -> {b:?}");
         }
+    }
+
+    #[test]
+    fn validation_repairs_section_names_and_anchors() {
+        let mut doc = Document::new();
+        let first = doc.slides[0].id;
+        doc.sections = vec![
+            Section {
+                name: "  Results  ".into(),
+                start: first,
+            },
+            Section {
+                name: "duplicate".into(),
+                start: first,
+            },
+            Section {
+                name: "missing".into(),
+                start: SlideId(999),
+            },
+        ];
+        doc.validate_and_repair().unwrap();
+        assert_eq!(doc.sections.len(), 1);
+        assert_eq!(doc.sections[0].name, "Results");
     }
 
     fn tb(text: &str) -> TextBox {
