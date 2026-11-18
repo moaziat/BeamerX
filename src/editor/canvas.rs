@@ -118,6 +118,18 @@ pub fn finish_text_edit(ed: &mut Editor, st: &mut CanvasState) {
 /// Requests from the canvas to the application.
 pub enum CanvasRequest {
     InsertImage,
+    ShowFormatPane,
+}
+
+fn fitted_image_rect(width: u32, height: u32) -> Option<Rect> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let margin = 12.0;
+    let available = (SLIDE_W - margin * 2.0, SLIDE_H - margin * 2.0);
+    let scale = (available.0 / width as f32).min(available.1 / height as f32);
+    let (w, h) = (width as f32 * scale, height as f32 * scale);
+    Some(Rect::new((SLIDE_W - w) * 0.5, (SLIDE_H - h) * 0.5, w, h))
 }
 
 fn dist_to_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -373,6 +385,86 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
         apply_text_heights(ed, &heights, editing);
     }
 
+    // A compact contextual menu for the selected image. Existing corner
+    // handles remain the direct-manipulation resize path.
+    let mut image_menu_active = false;
+    if st.gesture.is_none()
+        && ed.editing_text.is_none()
+        && let [id] = ed.selection.as_slice()
+        && let Some(o) = ed.object(*id).cloned()
+        && let ObjectKind::Image(image) = &o.kind
+    {
+        let image_id = o.id;
+        let meta = sv.assets.get(&image.asset).cloned();
+        let screen = view.rect(&o.rect);
+        let size = vec2(30.0, 24.0);
+        let pos = egui::pos2(
+            (screen.right() - size.x - 4.0).clamp(area.left() + 4.0, area.right() - size.x - 4.0),
+            (screen.top() + 4.0).clamp(area.top() + 4.0, area.bottom() - size.y - 4.0),
+        );
+        let menu_rect = egui::Rect::from_min_size(pos, size);
+        let button = ui
+            .put(
+                menu_rect,
+                egui::Button::new(egui::RichText::new("•••").strong())
+                    .min_size(size)
+                    .corner_radius(5.0),
+            )
+            .on_hover_text("Image options");
+        button.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Image options"));
+        let popup_id = egui::Popup::default_response_id(&button);
+        image_menu_active = button.contains_pointer() || egui::Popup::is_id_open(ui.ctx(), popup_id);
+        egui::Popup::menu(&button).show(|ui| {
+            ui.set_min_width(190.0);
+            crate::ui::heading(ui, "IMAGE");
+            if ui
+                .add_enabled(meta.is_some(), egui::Button::new("Reset Aspect Ratio"))
+                .clicked()
+            {
+                if let Some(meta) = &meta
+                    && meta.width > 0
+                {
+                    let mut rect = o.rect;
+                    rect.h = rect.w * meta.height as f32 / meta.width as f32;
+                    ed.set_object(image_id, o.kind.clone(), rect.sanitized(), None);
+                }
+                ui.close();
+            }
+            if ui
+                .add_enabled(meta.is_some(), egui::Button::new("Fit to Slide"))
+                .clicked()
+            {
+                if let Some(meta) = &meta
+                    && let Some(rect) = fitted_image_rect(meta.width, meta.height)
+                {
+                    ed.set_object(image_id, o.kind.clone(), rect, None);
+                }
+                ui.close();
+            }
+            if ui.button("Size & Position…").clicked() {
+                request = Some(CanvasRequest::ShowFormatPane);
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Bring to Front").clicked() {
+                ed.z_order(super::ZOrder::Front);
+                ui.close();
+            }
+            if ui.button("Bring Forward").clicked() {
+                ed.z_order(super::ZOrder::Forward);
+                ui.close();
+            }
+            if ui.button("Send Backward").clicked() {
+                ed.z_order(super::ZOrder::Backward);
+                ui.close();
+            }
+            if ui.button("Send to Back").clicked() {
+                ed.z_order(super::ZOrder::Back);
+                ui.close();
+            }
+        });
+    }
+
     // ---- keyboard ----------------------------------------------------------
     let text_focus = ui.ctx().text_edit_focused();
     // A single selected text box captures typing: letters go into the box on
@@ -481,7 +573,8 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
         }
     }
 
-    if resp.drag_started()
+    if !image_menu_active
+        && resp.drag_started()
         && let Some(p) = resp.interact_pointer_pos()
     {
         let sp = view.to_slide(p);
@@ -693,7 +786,8 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
     // Double-click on empty slide space creates a text box there.
     let mut created_by_double_click = false;
     // (A quick click just before can make egui count a triple-click.)
-    if (resp.double_clicked() || resp.triple_clicked())
+    if !image_menu_active
+        && (resp.double_clicked() || resp.triple_clicked())
         && ed.tool == Tool::Select
         && let Some(p) = resp.interact_pointer_pos()
         && edit_band.is_none_or(|b| !b.contains(p))
@@ -715,7 +809,8 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
         }
     }
 
-    if resp.clicked()
+    if !image_menu_active
+        && resp.clicked()
         && !created_by_double_click
         && let Some(p) = resp.interact_pointer_pos()
     {
@@ -785,6 +880,14 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
         ui.separator();
         if ui.add_enabled(has_sel, egui::Button::new("Bring to Front")).clicked() {
             ed.z_order(super::ZOrder::Front);
+            ui.close();
+        }
+        if ui.add_enabled(has_sel, egui::Button::new("Bring Forward")).clicked() {
+            ed.z_order(super::ZOrder::Forward);
+            ui.close();
+        }
+        if ui.add_enabled(has_sel, egui::Button::new("Send Backward")).clicked() {
+            ed.z_order(super::ZOrder::Backward);
             ui.close();
         }
         if ui.add_enabled(has_sel, egui::Button::new("Send to Back")).clicked() {
@@ -930,6 +1033,16 @@ mod tests {
     fn resize_never_inverts() {
         let r = resize_box(Rect::new(0.0, 0.0, 10.0, 10.0), (1, 0), (-50.0, 0.0), false);
         assert_eq!(r.w, MIN_EXTENT);
+    }
+
+    #[test]
+    fn fitted_image_stays_inside_slide_and_keeps_aspect() {
+        let wide = fitted_image_rect(1920, 1080).unwrap();
+        assert!((wide.w / wide.h - 16.0 / 9.0).abs() < 1e-3);
+        assert!(wide.x >= 12.0 && wide.y >= 12.0);
+        assert!(wide.right() <= SLIDE_W - 12.0 + 1e-3);
+        assert!(wide.bottom() <= SLIDE_H - 12.0 + 1e-3);
+        assert!(fitted_image_rect(0, 10).is_none());
     }
 
     #[test]

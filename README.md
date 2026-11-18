@@ -75,7 +75,8 @@ optional pane with exact position, size, colours and picture details.
   grow in height with their content. Snapping to the slide centre/edges and other
   objects (hold `⌘` to disable, `⇧` to constrain); arrow keys nudge (`⇧` = 10 pt).
 * **Images** — drag PNG/JPEG files from Finder onto the slide, or *Insert ›
-  Picture…*.
+  Picture…*. A selected image shows a three-dot menu for fit/aspect sizing,
+  exact Size & Position controls, and front/back ordering.
 * **Shapes** — rectangle, rounded rectangle, oval, triangle, diamond, line and
   arrow from the *Home › Drawing* or *Insert › Shapes* gallery; fill and
   outline stay available in *Home › Drawing*.

@@ -1905,6 +1905,9 @@ impl eframe::App for BeamerApp {
                 );
             }
         });
+        if matches!(req, Some(CanvasRequest::ShowFormatPane)) {
+            self.show_format_pane = true;
+        }
         if insert_image || matches!(req, Some(CanvasRequest::InsertImage)) {
             self.insert_image_dialog();
         }
