@@ -273,10 +273,14 @@ pub fn slide_title(slide: &Slide) -> Option<String> {
 }
 
 fn text_node(o: &Object, t: &TextBox) -> String {
+    // TikZ's `flush` variants fill lines greedily and never hyphenate,
+    // which is how the editor (and PowerPoint) wraps text; the plain
+    // variants balance line lengths and hyphenate, so the PDF would break
+    // lines differently from what the user sees on the canvas.
     let align = match t.align {
-        TextAlign::Left => "left",
-        TextAlign::Center => "center",
-        TextAlign::Right => "right",
+        TextAlign::Left => "flush left",
+        TextAlign::Center => "flush center",
+        TextAlign::Right => "flush right",
     };
     let mut font = font_cmd(t.font_size);
     if t.bold {
@@ -392,7 +396,8 @@ fn shape_cmd(o: &Object, s: &Shape) -> String {
         | ShapeKind::Diamond
         | ShapeKind::Cube
         | ShapeKind::Cylinder
-        | ShapeKind::Bevel => {
+        | ShapeKind::Bevel
+        | ShapeKind::BlockArrow => {
             if let Some(f) = s.fill {
                 opts.push(format!("fill={}", color_name(f)));
                 if let Some(a) = opacity(f) {
@@ -498,6 +503,11 @@ fn shape_cmd(o: &Object, s: &Shape) -> String {
                         ir = bp(r.right() - d),
                         ib = bp(r.bottom() - d),
                     )
+                }
+                ShapeKind::BlockArrow => {
+                    let pts = crate::document::block_arrow_points(r.x, r.y, r.w, r.h);
+                    let path: Vec<String> = pts.iter().map(|(x, y)| format!("({},{})", bp(*x), bp(*y))).collect();
+                    format!("\\path[{o}] {} -- cycle;\n", path.join(" -- "))
                 }
                 _ => unreachable!("linear shapes are handled below"),
             }
@@ -839,6 +849,27 @@ mod tests {
         );
         assert_eq!(escape_text("x\u{7}y\tz"), "xy z");
         assert_eq!(escape_text("Größe – π"), "Größe – π");
+    }
+
+    #[test]
+    fn text_wraps_greedily_without_hyphenation() {
+        for (align, want) in [
+            (TextAlign::Left, "align=flush left,"),
+            (TextAlign::Center, "align=flush center,"),
+            (TextAlign::Right, "align=flush right,"),
+        ] {
+            let t = TextBox {
+                text: "Perspective".into(),
+                align,
+                ..Default::default()
+            };
+            let o = Object {
+                id: ObjectId(1),
+                rect: Rect::new(0.0, 0.0, 50.0, 20.0),
+                kind: ObjectKind::Text(t.clone()),
+            };
+            assert!(text_node(&o, &t).contains(want), "{align:?}");
+        }
     }
 
     #[test]

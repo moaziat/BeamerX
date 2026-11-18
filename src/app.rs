@@ -1278,6 +1278,7 @@ impl BeamerApp {
                         ("Cube", Icon::Cube, ShapeKind::Cube),
                         ("Cylinder", Icon::Cylinder, ShapeKind::Cylinder),
                         ("Bevel", Icon::Bevel, ShapeKind::Bevel),
+                        ("Block arrow", Icon::BlockArrow, ShapeKind::BlockArrow),
                         ("Line", Icon::Line, ShapeKind::Line),
                         ("Arrow", Icon::Arrow, ShapeKind::Arrow),
                     ]

@@ -26,7 +26,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 pub const FORMAT_NAME: &str = "beamerx";
-pub const FORMAT_VERSION: u32 = 6;
+pub const FORMAT_VERSION: u32 = 7;
 pub const MIMETYPE: &str = "application/x-beamerx";
 pub const EXTENSION: &str = "beamerx";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -166,6 +166,10 @@ fn migrate(mut v: Value) -> Result<Value> {
     if ver == 5 {
         migrate_v5_to_v6(&mut v);
         ver = 6;
+    }
+    if ver == 6 {
+        // Format 7 added the block-arrow shape; nothing to convert.
+        ver = 7;
     }
     v["format_version"] = ver.into();
     Ok(v)

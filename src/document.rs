@@ -630,8 +630,28 @@ pub enum ShapeKind {
     Cube,
     Cylinder,
     Bevel,
+    /// PowerPoint's "Right Arrow" block shape (outline + fill).
+    BlockArrow,
     Line,
     Arrow,
+}
+
+/// Outline of a right-pointing block arrow inside `(x, y, w, h)`:
+/// shaft half as tall as the box, head as long as the box is tall (at most
+/// half its width). Shared by the editor and the TikZ export.
+pub fn block_arrow_points(x: f32, y: f32, w: f32, h: f32) -> [(f32, f32); 7] {
+    let head = h.min(w * 0.5);
+    let (cy, sh) = (y + h * 0.5, h * 0.25);
+    let (r, neck) = (x + w, x + w - head);
+    [
+        (x, cy - sh),
+        (neck, cy - sh),
+        (neck, y),
+        (r, cy),
+        (neck, y + h),
+        (neck, cy + sh),
+        (x, cy + sh),
+    ]
 }
 
 impl ShapeKind {
@@ -645,6 +665,7 @@ impl ShapeKind {
             ShapeKind::Ellipse => (60.0, 60.0),
             ShapeKind::Cube => (80.0, 70.0),
             ShapeKind::Cylinder => (68.0, 76.0),
+            ShapeKind::BlockArrow => (90.0, 30.0),
             _ => (90.0, 55.0),
         }
     }
@@ -805,7 +826,8 @@ impl Shape {
             | ShapeKind::Diamond
             | ShapeKind::Cube
             | ShapeKind::Cylinder
-            | ShapeKind::Bevel => Some(Color::LIGHT_FILL),
+            | ShapeKind::Bevel
+            | ShapeKind::BlockArrow => Some(Color::LIGHT_FILL),
             _ => None,
         };
         Self {
@@ -873,6 +895,7 @@ impl ObjectKind {
                 ShapeKind::Cube => "Cube",
                 ShapeKind::Cylinder => "Cylinder",
                 ShapeKind::Bevel => "Bevel",
+                ShapeKind::BlockArrow => "Block Arrow",
                 ShapeKind::Line => "Line",
                 ShapeKind::Arrow => "Arrow",
             },

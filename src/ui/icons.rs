@@ -24,6 +24,7 @@ pub enum Icon {
     Triangle,
     Diamond,
     Cube,
+    BlockArrow,
     Cylinder,
     Bevel,
     Line,
@@ -171,6 +172,11 @@ pub fn paint(p: &Painter, r: Rect, icon: Icon, c: Color32) {
                 Color32::TRANSPARENT,
                 st,
             ));
+        }
+        Icon::BlockArrow => {
+            let pts = crate::document::block_arrow_points(0.08, 0.22, 0.84, 0.56);
+            let pts: Vec<Pos2> = pts.iter().map(|(x, y)| at(*x, *y)).collect();
+            p.add(Shape::closed_line(pts, st));
         }
         Icon::Cube => {
             p.add(Shape::convex_polygon(
@@ -414,6 +420,7 @@ fn accessible_name(icon: Icon) -> &'static str {
         Icon::Triangle => "Triangle",
         Icon::Diamond => "Diamond",
         Icon::Cube => "Cube",
+        Icon::BlockArrow => "Block arrow",
         Icon::Cylinder => "Cylinder",
         Icon::Bevel => "Bevel",
         Icon::Line => "Line",

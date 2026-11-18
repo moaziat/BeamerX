@@ -572,6 +572,10 @@ fn shape_outlines(kind: ShapeKind, d: egui::Rect, r: &Rect, scale: f32) -> Vec<(
             }
             v
         }
+        ShapeKind::BlockArrow => {
+            let pts = crate::document::block_arrow_points(d.left(), d.top(), d.width(), d.height());
+            vec![(pts.iter().map(|(x, y)| pos2(*x, *y)).collect(), true)]
+        }
         ShapeKind::Line | ShapeKind::Arrow => Vec::new(),
     }
 }
@@ -742,6 +746,19 @@ pub fn paint_shape(p: &Painter, view: &View, r: &Rect, s: &Shape) {
                 p.add(egui::Shape::convex_polygon(pts, fill.gamma_multiply(k), Stroke::NONE));
             }
             p.rect_filled(inner, 0.0, fill);
+        }
+        ShapeKind::BlockArrow => {
+            if s.fill.is_some() {
+                let p7 = crate::document::block_arrow_points(d.left(), d.top(), d.width(), d.height());
+                let q = |i: usize| pos2(p7[i].0, p7[i].1);
+                // Concave outline: fill shaft and head separately.
+                p.add(egui::Shape::convex_polygon(
+                    vec![q(0), q(1), q(5), q(6)],
+                    fill,
+                    Stroke::NONE,
+                ));
+                p.add(egui::Shape::convex_polygon(vec![q(2), q(3), q(4)], fill, Stroke::NONE));
+            }
         }
         ShapeKind::Line | ShapeKind::Arrow => {
             if s.stroke_width <= 0.0 {
