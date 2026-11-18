@@ -5,6 +5,7 @@
 //! translated by the app into egui viewport commands, which keeps native
 //! ⌘C/⌘V working inside text fields as well as on the canvas.
 
+#[cfg(target_os = "macos")]
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 

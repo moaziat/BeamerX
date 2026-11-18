@@ -1,7 +1,7 @@
 # BeamerX
 
 A lightweight, native visual editor for scientific presentations, written in
-Rust for **macOS on Apple Silicon**, with a PowerPoint-style layout. Type text
+Rust for **Linux and macOS**, with a PowerPoint-style layout. Type text
 directly on 16:9 slides with **LaTeX math written like LaTeX** (`$f(x)$`
 inline, `$$…$$` centred) rendered live by the real TeX engine; add images and
 shapes; save editable projects; present full-screen; export a self-contained
@@ -15,7 +15,7 @@ Status: **MVP 0.1** (see [scope](#scope-of-010) and
 
 | | |
 |---|---|
-| OS | macOS 11+ on Apple Silicon (`aarch64-apple-darwin`). Other platforms compile but are not supported releases. |
+| OS | Linux with glibc 2.35+ on x86_64 or ARM64 (X11/XWayland), or macOS 11+ on Apple Silicon. |
 | Rust | 1.85 or newer (`rustup` stable) |
 | LaTeX | **[Tectonic](https://tectonic-typesetting.github.io/)** (recommended: `brew install tectonic`) or a TeX Live/MacTeX `xelatex`/`lualatex`/`pdflatex`. Needed for math previews and PDF export; everything else works without it. Tectonic downloads the LaTeX packages it needs on first use (network required once). |
 
@@ -24,12 +24,32 @@ BeamerX looks for the engine on `PATH` and in `/opt/homebrew/bin`,
 Finder do not inherit your shell `PATH`). Set `BEAMERX_LATEX=/path/to/engine`
 to choose one explicitly.
 
-## Build and run
+## Install
+
+Install the latest checksum-verified release into `~/.local/bin` without
+Rust or a compiler:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/moaziat/BeamerX/main/install.sh | sh
+```
+
+The installer detects Linux/macOS and x86_64/ARM64, downloads the matching
+GitHub Release asset, and verifies it against the published SHA-256 checksum
+before installing. Set `BEAMERX_INSTALL_DIR` to choose another destination or
+`BEAMERX_VERSION=v0.1.0` to install a specific release.
+
+Linux desktops need OpenGL, X11 (or XWayland), and an XDG desktop portal for
+native file dialogs. These are already present on normal Ubuntu, Fedora,
+Debian, Arch, GNOME, and KDE desktop installations. LaTeX remains optional.
+
+## Build and run from source
 
 ```sh
 cargo run --release                 # start the editor
 cargo run --release -- deck.beamerx # open a project
 scripts/bundle-macos.sh             # build dist/BeamerX.app (shipping build)
+scripts/package-release.sh x86_64-unknown-linux-gnu
 ```
 
 Build profiles: `release` is tuned for quick rebuilds (parallel codegen,
@@ -77,8 +97,8 @@ optional pane with exact position, size, colours and picture details.
 * **Images** — drag PNG/JPEG files from Finder onto the slide, or *Insert ›
   Picture…*. A selected image shows a three-dot menu for fit/aspect sizing,
   exact Size & Position controls, and front/back ordering.
-* **Shapes** — rectangle, rounded rectangle, oval, triangle, diamond, line and
-  arrow from the *Home › Drawing* or *Insert › Shapes* gallery; fill and
+* **Shapes** — rectangle, rounded rectangle, oval, triangle, diamond, cube,
+  cylinder, bevel, block arrow, line and arrow from the *Home › Drawing* or *Insert › Shapes* gallery; fill and
   outline stay available in *Home › Drawing*.
 * **Edit** — shift-click / marquee for multi-selection; align and order in
   *Arrange*; `⌘C`/`⌘X`/`⌘V`/`⌘D`; `⌫` deletes; undo/redo `⌘Z`/`⇧⌘Z`.
@@ -114,7 +134,7 @@ A ZIP container: `mimetype`, a versioned `project.json` (document + asset
 manifest) and the **original image bytes** under `assets/<sha256>.<ext>`
 (stored, not recompressed, de-duplicated by content hash). No base64 in JSON.
 Saves are atomic (temp file → fsync → rename); a failed save never damages the
-previous file. Format 5 adds a persistent stock Beamer theme; format 4 adds named slide sections; format 3 stores character
+previous file. Format 7 adds the block-arrow shape; format 6 adds line ends; format 5 adds a persistent stock Beamer theme; format 4 adds named slide sections; format 3 stores character
 formats as spans and paragraph formats (style, list, level) per line. Older files are migrated on open:
 format-1 equation objects become text boxes containing `$\displaystyle …$`,
 and format-2 box-wide bullets become per-paragraph bullets. Loading validates structure, bounds sizes, never uses archive
@@ -138,9 +158,9 @@ placed absolutely with TikZ, so positions and sizes match the editor exactly.
   size, outline indent (`\leftskip`) and hanging list label, following the same
   baseline convention as the editor (`\strut`, 1.2 × size line spacing, TeX's
   `\lineskip` rule for tall math). Bold/italic/colour runs become
-  `\bfseries`/`\itshape`/`\color` groups. Line breaks can occasionally differ:
-  TeX uses optimal-fit breaking and kerning tables; the editor uses greedy
-  wrapping.
+  `\bfseries`/`\itshape`/`\color` groups. Text boxes are exported with TikZ's
+  `flush` alignments, which fill lines greedily and never hyphenate, like the
+  editor; small width differences from kerning can still move a word.
 * Math is serif (`\usefonttheme[onlymath]{serif}`), as in the preview.
 * Colours with transparency are exported with TikZ opacity.
 * The Design ribbon includes stock Beamer themes (Default, Madrid, Boadilla,
@@ -188,7 +208,8 @@ src/
   platform/       macOS menu bar (muda) and CoreGraphics PDF rasterization
                   (the only `unsafe` code, documented in the module)
   jobs.rs         bounded worker pools (decode, LaTeX, I/O)
-  perf.rs         frame statistics; bench.rs / bench_smoke.rs benchmarks
+  perf.rs         frame statistics; bench.rs / bench_smoke.rs benchmarks;
+                  bench_demo.rs scripted, self-recorded product demo
 ```
 
 Rendering is event-driven (no continuous repaint); image decoding, LaTeX,
@@ -213,6 +234,19 @@ cargo run --example showcase -- out/   # sample deck + Beamer + PDF + PNGs
 cargo run --release -- --bench smoke   # end-to-end UI workflow (23 steps)
 scripts/measure.sh                     # performance measurements
 ```
+
+**Demo video.** `scripts/make-demo-video.sh DECK.beamerx OUT.mp4 [ORIGINAL…]`
+opens one window for a few minutes in which BeamerX rebuilds `DECK` from a
+blank slide through its own UI: it double-clicks and types every text box and
+equation, drops, moves and resizes pictures, draws shapes, bolds runs,
+presents, then saves the Beamer source (*File › Export Beamer*) and scrolls
+through its `main.tex`. Coloured step titles and a visible cursor are drawn on
+top. The app records its own frames (not the screen), and AVFoundation encodes
+them (`scripts/frames-to-mp4.swift`, no ffmpeg needed). Optional ORIGINAL
+images or PDF pages (`deck.pdf#73`) come first; the saved Beamer folder is
+kept next to the video. `cargo run --example template_73_74 -- deck.pptx out/` builds the
+reference deck used for slides 73–74 of the winter-school template (`.beamerx`,
+Beamer folder and PDF).
 
 Logging: `BEAMERX_LOG=beamerx=debug cargo run`.
 

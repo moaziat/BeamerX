@@ -5,7 +5,10 @@ pub mod color_picker;
 pub mod icons;
 pub mod line_style;
 
-use egui::{Color32, CornerRadius, FontFamily, Stroke, Theme};
+#[cfg(target_os = "macos")]
+use egui::FontFamily;
+use egui::{Color32, CornerRadius, Stroke, Theme};
+#[cfg(target_os = "macos")]
 use std::sync::Arc;
 
 /// Brand accent (File button, active tab, Present).
