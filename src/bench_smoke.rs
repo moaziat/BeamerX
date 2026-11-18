@@ -499,40 +499,64 @@ impl Smoke {
                 Poll::Wait
             }
             "title_and_content_layout" => {
-                if sub == 0 {
-                    crate::editor::canvas::finish_text_edit(&mut app.ed, &mut app.canvas);
-                    app.on_action(MenuAction::NewSlide);
-                    return Poll::Wait;
+                match sub {
+                    0 => {
+                        crate::editor::canvas::finish_text_edit(&mut app.ed, &mut app.canvas);
+                        app.on_action(MenuAction::NewSlide);
+                    }
+                    1 => {
+                        // Merely leaving an empty placeholder keeps it. Then
+                        // enter it again so the next Delete event exercises
+                        // the focused-text routing regression.
+                        let first = app.ed.slide().objects[0].id;
+                        crate::editor::canvas::begin_text_edit(
+                            &mut app.ed,
+                            &mut app.canvas,
+                            first,
+                            crate::editor::text_edit::Caret::End,
+                        );
+                        crate::editor::canvas::finish_text_edit(&mut app.ed, &mut app.canvas);
+                        if app.ed.slide().objects.len() != 2 {
+                            return Poll::Fail("empty placeholder vanished when leaving edit mode".into());
+                        }
+                        crate::editor::canvas::begin_text_edit(
+                            &mut app.ed,
+                            &mut app.canvas,
+                            first,
+                            crate::editor::text_edit::Caret::End,
+                        );
+                    }
+                    2 => app.inject_events().push(key(Key::Delete, true)),
+                    3 => app.inject_events().push(key(Key::Delete, false)),
+                    _ => {
+                        let deleted = app.ed.slide().objects.len() == 1 && app.ed.editing_text.is_none();
+                        app.ed.undo();
+                        let s = app.ed.slide();
+                        let titles = s
+                            .objects
+                            .iter()
+                            .filter(|o| matches!(&o.kind, ObjectKind::Text(t) if t.placeholder.is_some() && t.para(0).style == crate::document::ParaStyle::Title))
+                            .count();
+                        let bodies = s
+                            .objects
+                            .iter()
+                            .filter(|o| matches!(&o.kind, ObjectKind::Text(t) if t.para(0).list == crate::document::ListKind::Bullet))
+                            .count();
+                        let restored = s.objects.len() == 2;
+                        // Undo the new slide and return to the first slide for
+                        // the remaining workflow.
+                        app.ed.undo();
+                        app.ed.go_to_slide(0);
+                        return if titles == 1 && bodies == 1 && deleted && restored {
+                            Poll::Done
+                        } else {
+                            Poll::Fail(format!(
+                                "titles {titles}, bodies {bodies}, deleted {deleted}, restored {restored}"
+                            ))
+                        };
+                    }
                 }
-                let s = app.ed.slide();
-                let titles = s
-                    .objects
-                    .iter()
-                    .filter(|o| matches!(&o.kind, ObjectKind::Text(t) if t.placeholder.is_some() && t.para(0).style == crate::document::ParaStyle::Title))
-                    .count();
-                let bodies = s
-                    .objects
-                    .iter()
-                    .filter(|o| matches!(&o.kind, ObjectKind::Text(t) if t.para(0).list == crate::document::ListKind::Bullet))
-                    .count();
-                // Placeholders survive an edit session that leaves them empty.
-                let first = s.objects[0].id;
-                crate::editor::canvas::begin_text_edit(
-                    &mut app.ed,
-                    &mut app.canvas,
-                    first,
-                    crate::editor::text_edit::Caret::End,
-                );
-                crate::editor::canvas::finish_text_edit(&mut app.ed, &mut app.canvas);
-                let kept = app.ed.slide().objects.len() == 2;
-                // Back to the first slide for the remaining steps.
-                app.ed.undo();
-                app.ed.go_to_slide(0);
-                if titles == 1 && bodies == 1 && kept {
-                    Poll::Done
-                } else {
-                    Poll::Fail(format!("titles {titles}, bodies {bodies}, kept {kept}"))
-                }
+                Poll::Wait
             }
             "insert_shape" => {
                 let n = app.ed.slide().objects.len();

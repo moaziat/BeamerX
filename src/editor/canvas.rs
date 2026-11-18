@@ -115,6 +115,25 @@ pub fn finish_text_edit(ed: &mut Editor, st: &mut CanvasState) {
     st.rich = None;
 }
 
+/// Delete an empty text box that currently owns the caret. Layout
+/// placeholders start in text-edit mode when clicked, so without this bridge
+/// Delete/Backspace would be routed to an empty string and become a no-op
+/// instead of behaving like object deletion.
+fn delete_empty_edited_box(ed: &mut Editor, st: &mut CanvasState) -> bool {
+    let Some(id) = ed.editing_text else {
+        return false;
+    };
+    let empty = matches!(ed.object(id).map(|o| &o.kind), Some(ObjectKind::Text(t)) if t.text.is_empty());
+    if !empty {
+        return false;
+    }
+    ed.history.seal();
+    st.rich = None;
+    ed.selection = vec![id];
+    ed.delete_selection();
+    true
+}
+
 /// Requests from the canvas to the application.
 pub enum CanvasRequest {
     InsertImage,
@@ -467,6 +486,9 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
     }
 
     // ---- keyboard ----------------------------------------------------------
+    let deleted_empty_text = st.gesture.is_none()
+        && ui.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace))
+        && delete_empty_edited_box(ed, st);
     let text_focus = ui.ctx().text_edit_focused();
     // A single selected text box captures typing: letters go into the box on
     // the slide instead of triggering tool shortcuts (as in PowerPoint).
@@ -486,7 +508,7 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
             begin_text_edit(ed, st, id, Caret::End);
         }
     }
-    if !text_focus && ed.editing_text.is_none() && st.gesture.is_none() {
+    if !deleted_empty_text && !text_focus && ed.editing_text.is_none() && st.gesture.is_none() {
         let (mods, keys) = ui.input(|i| {
             let keys: Vec<Key> = [
                 Key::Delete,
@@ -1046,5 +1068,37 @@ mod tests {
     fn segment_distance() {
         assert_eq!(dist_to_segment((5.0, 3.0), (0.0, 0.0), (10.0, 0.0)), 3.0);
         assert_eq!(dist_to_segment((-4.0, 3.0), (0.0, 0.0), (10.0, 0.0)), 5.0);
+    }
+
+    #[test]
+    fn delete_key_removes_empty_layout_placeholder_and_is_undoable() {
+        let mut ed = Editor::new(crate::editor::layouts::new_presentation(), None);
+        let id = ed.doc.slides[0].objects[0].id;
+        let mut st = CanvasState::default();
+        begin_text_edit(&mut ed, &mut st, id, Caret::End);
+
+        assert!(delete_empty_edited_box(&mut ed, &mut st));
+        assert!(ed.object(id).is_none());
+        assert!(ed.editing_text.is_none());
+
+        ed.undo();
+        assert!(ed.object(id).is_some());
+    }
+
+    #[test]
+    fn delete_key_stays_with_text_editor_when_box_has_content() {
+        let mut doc = crate::editor::layouts::new_presentation();
+        let id = doc.slides[0].objects[0].id;
+        let Some(ObjectKind::Text(t)) = doc.slides[0].object_mut(id).map(|o| &mut o.kind) else {
+            unreachable!()
+        };
+        t.text = "Title".into();
+        let mut ed = Editor::new(doc, None);
+        let mut st = CanvasState::default();
+        begin_text_edit(&mut ed, &mut st, id, Caret::End);
+
+        assert!(!delete_empty_edited_box(&mut ed, &mut st));
+        assert!(ed.object(id).is_some());
+        assert_eq!(ed.editing_text, Some(id));
     }
 }
