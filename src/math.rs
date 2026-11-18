@@ -1,21 +1,23 @@
-//! Equation preview service.
+//! LaTeX math preview service for `$…$` / `$$…$$` inside text boxes.
 //!
-//! Equations are typeset by the real LaTeX engine (the same one used for
-//! export) so the editor shows exactly what the exported Beamer will
-//! contain. To keep the editor responsive:
+//! Math is typeset by the real LaTeX engine (the same one used for export)
+//! so the editor shows exactly what the exported Beamer will contain. To
+//! keep the editor responsive:
 //!
-//! * requests are **debounced** (an equation must stay unchanged for
+//! * requests are **debounced** (a formula must stay unchanged for
 //!   [`DEBOUNCE`] before it is compiled, so typing does not launch TeX on
 //!   every keystroke);
-//! * pending equations are compiled in **batches** (one TeX run, one page per
-//!   equation) on a bounded pool of worker threads;
+//! * pending formulas are compiled in **batches** (one TeX run, one page per
+//!   formula) on a bounded pool of worker threads;
 //! * results are cached in memory and **on disk** (keyed by source, size,
-//!   preamble and renderer version), so reopening a deck is instant;
-//! * stale requests are never dispatched, and results for keys nobody wants
-//!   any more are simply dropped.
+//!   style, preamble and renderer version), so reopening a deck is instant;
+//! * stale requests are never dispatched, and results nobody wants any more
+//!   are simply dropped.
 //!
-//! The compiled PDF is kept (it is small and vector); rasterization to the
-//! zoom-dependent pixel size happens separately in the texture cache.
+//! Each result carries the formula's width, height and **depth** (measured
+//! by TeX) so inline math sits on the text baseline. The compiled PDF is kept
+//! (small, vector); rasterization to the zoom-dependent pixel size happens
+//! in the texture cache.
 
 use crate::export::{MATH_PACKAGES, PRE_CLASS, normalize_math};
 use crate::jobs::WorkerPool;
@@ -31,11 +33,13 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 /// Bump when the preview template changes, invalidating disk caches.
-pub const RENDER_VERSION: u32 = 1;
-pub const DEBOUNCE: Duration = Duration::from_millis(220);
+pub const RENDER_VERSION: u32 = 2;
+pub const DEBOUNCE: Duration = Duration::from_millis(140);
 const BATCH_MAX: usize = 24;
 const FORGET_UNWANTED_AFTER: Duration = Duration::from_secs(3);
 const MAX_ENTRIES: usize = 4096;
+/// TeX points per PostScript point.
+const PT_PER_BP: f32 = 72.27 / 72.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MathKey(pub [u8; 16]);
@@ -46,10 +50,11 @@ impl MathKey {
     }
 }
 
-pub fn math_key(source: &str, font_size: f32, preamble: &str) -> MathKey {
+pub fn math_key(source: &str, font_size: f32, display: bool, preamble: &str) -> MathKey {
     let mut h = Sha256::new();
     h.update(RENDER_VERSION.to_le_bytes());
     h.update(((font_size * 100.0).round() as u32).to_le_bytes());
+    h.update([u8::from(display)]);
     h.update((preamble.len() as u64).to_le_bytes());
     h.update(preamble.as_bytes());
     h.update(source.as_bytes());
@@ -59,14 +64,22 @@ pub fn math_key(source: &str, font_size: f32, preamble: &str) -> MathKey {
     MathKey(k)
 }
 
-/// A typeset equation: one page of a (possibly shared) PDF.
+/// A typeset formula: one page of a (possibly shared) PDF.
 #[derive(Debug)]
 pub struct MathRender {
     pub key: MathKey,
     pub pdf: Arc<Vec<u8>>,
     pub page: usize,
-    /// Natural size in bp (width, height + depth).
+    /// Size of the box in bp: (width, height + depth).
     pub size_bp: (f32, f32),
+    /// Depth below the baseline in bp.
+    pub depth_bp: f32,
+}
+
+impl MathRender {
+    pub fn ascent_bp(&self) -> f32 {
+        (self.size_bp.1 - self.depth_bp).max(0.0)
+    }
 }
 
 pub enum MathStatus {
@@ -75,12 +88,16 @@ pub enum MathStatus {
     Failed(Arc<str>),
 }
 
+#[derive(Clone, Debug)]
+struct Req {
+    key: MathKey,
+    src: String,
+    size: f32,
+    display: bool,
+}
+
 enum State {
-    Waiting {
-        since: Instant,
-        source: String,
-        font_size: f32,
-    },
+    Waiting { since: Instant, req: Req },
     Queued,
     Ready(Arc<MathRender>),
     Failed(Arc<str>),
@@ -91,11 +108,9 @@ struct Entry {
     last_wanted: Instant,
 }
 
+type BatchResult = Vec<(MathKey, Result<Arc<MathRender>, String>)>;
 /// Parsed batch PDFs (bytes + page sizes) by cache file name.
 type PdfMemo = HashMap<String, (Arc<Vec<u8>>, Vec<(f32, f32)>)>;
-/// A compiled PDF and its page sizes in bp.
-type Compiled = (Vec<u8>, Vec<(f32, f32)>);
-type BatchResult = Vec<(MathKey, Result<Arc<MathRender>, String>)>;
 
 pub struct MathService {
     entries: HashMap<MathKey, Entry>,
@@ -144,18 +159,22 @@ impl MathService {
         }
     }
 
-    pub fn key_for(&self, source: &str, font_size: f32) -> MathKey {
-        math_key(source, font_size, &self.preamble)
+    pub fn key_for(&self, source: &str, font_size: f32, display: bool) -> MathKey {
+        math_key(source, font_size, display, &self.preamble)
     }
 
-    /// Ask for an equation. Cheap; call every frame for visible equations.
-    pub fn request(&mut self, source: &str, font_size: f32, now: Instant) -> MathStatus {
-        let key = self.key_for(source, font_size);
+    /// Ask for a formula. Cheap; call every frame for visible math.
+    pub fn request(&mut self, source: &str, font_size: f32, display: bool, now: Instant) -> MathStatus {
+        let key = self.key_for(source, font_size, display);
         let e = self.entries.entry(key).or_insert_with(|| Entry {
             state: State::Waiting {
                 since: now,
-                source: source.to_string(),
-                font_size,
+                req: Req {
+                    key,
+                    src: source.to_string(),
+                    size: font_size,
+                    display,
+                },
             },
             last_wanted: now,
         });
@@ -168,8 +187,12 @@ impl MathService {
     }
 
     /// Peek without registering interest.
-    pub fn peek(&self, source: &str, font_size: f32) -> Option<Arc<MathRender>> {
-        match self.entries.get(&self.key_for(source, font_size)).map(|e| &e.state) {
+    pub fn peek(&self, source: &str, font_size: f32, display: bool) -> Option<Arc<MathRender>> {
+        match self
+            .entries
+            .get(&self.key_for(source, font_size, display))
+            .map(|e| &e.state)
+        {
             Some(State::Ready(r)) => Some(Arc::clone(r)),
             _ => None,
         }
@@ -206,15 +229,10 @@ impl MathService {
             }
         }
 
-        let mut due: Vec<(MathKey, String, f32)> = Vec::new();
+        let mut due: Vec<Req> = Vec::new();
         let mut next: Option<Duration> = None;
-        self.entries.retain(|key, e| {
-            if let State::Waiting {
-                since,
-                source,
-                font_size,
-            } = &e.state
-            {
+        self.entries.retain(|_, e| {
+            if let State::Waiting { since, req } = &e.state {
                 if now.duration_since(e.last_wanted) > FORGET_UNWANTED_AFTER {
                     return false;
                 }
@@ -222,7 +240,7 @@ impl MathService {
                 if age >= DEBOUNCE {
                     // Only compile what is still being asked for.
                     if now.duration_since(e.last_wanted) < Duration::from_millis(1000) {
-                        due.push((*key, std::mem::take(&mut source.clone()), *font_size));
+                        due.push(req.clone());
                     }
                 } else {
                     let left = DEBOUNCE - age;
@@ -233,15 +251,15 @@ impl MathService {
         });
 
         if !due.is_empty() {
-            for (key, _, _) in &due {
-                if let Some(e) = self.entries.get_mut(key) {
+            for r in &due {
+                if let Some(e) = self.entries.get_mut(&r.key) {
                     e.state = State::Queued;
                 }
             }
             match &self.toolchain {
                 None => {
-                    for (key, _, _) in due {
-                        if let Some(e) = self.entries.get_mut(&key) {
+                    for r in due {
+                        if let Some(e) = self.entries.get_mut(&r.key) {
                             e.state = State::Failed(NO_ENGINE.into());
                         }
                     }
@@ -310,7 +328,17 @@ pub fn preview_preamble(preamble: &str) -> String {
         .join("\n")
 }
 
-pub fn batch_tex(items: &[(MathKey, String, f32)], preamble: &str) -> String {
+/// The math as it appears in the exported text: `$…$`, display style for
+/// `$$…$$` blocks.
+pub fn math_mode(src: &str, display: bool) -> String {
+    if display {
+        format!("$\\displaystyle {}$", normalize_math(src))
+    } else {
+        format!("${}$", normalize_math(src))
+    }
+}
+
+fn batch_tex(items: &[Req], preamble: &str) -> String {
     let mut t = String::new();
     t.push_str(PRE_CLASS);
     t.push_str("\\documentclass{article}\n");
@@ -322,16 +350,28 @@ pub fn batch_tex(items: &[(MathKey, String, f32)], preamble: &str) -> String {
     }
     t.push_str("\\usepackage[active,tightpage]{preview}\n\\setlength\\PreviewBorder{0pt}\n\\pagestyle{empty}\n");
     t.push_str("\\begin{document}\n");
-    for (_, src, size) in items {
+    for r in items {
+        // Measure the box so the editor knows the baseline (depth).
         t.push_str(&format!(
-            "\\begin{{preview}}\\fontsize{{{s}bp}}{{{l}bp}}\\selectfont\\sffamily$\\displaystyle {m}$\\end{{preview}}\n",
-            s = size,
-            l = size * crate::document::typeset::LINE_SPREAD,
-            m = normalize_math(src)
+            "\\begin{{preview}}\\fontsize{{{s}bp}}{{{l}bp}}\\selectfont\\sffamily\\setbox0=\\hbox{{{m}}}\\typeout{{BXDIM \\the\\ht0 \\the\\dp0 \\the\\wd0}}\\box0\\end{{preview}}\n",
+            s = r.size,
+            l = r.size * crate::document::typeset::LINE_SPREAD,
+            m = math_mode(&r.src, r.display),
         ));
     }
     t.push_str("\\end{document}\n");
     t
+}
+
+/// Depths (bp) of each measured box, from `BXDIM <ht>pt <dp>pt <wd>pt`.
+fn parse_depths(log: &str) -> Vec<f32> {
+    log.lines()
+        .filter_map(|l| l.trim().strip_prefix("BXDIM "))
+        .map(|rest| {
+            let parts: Vec<f32> = rest.split("pt").filter_map(|p| p.trim().parse::<f32>().ok()).collect();
+            parts.get(1).copied().unwrap_or(0.0) / PT_PER_BP
+        })
+        .collect()
 }
 
 fn idx_path(dir: &Path, key: &MathKey) -> PathBuf {
@@ -343,6 +383,7 @@ fn from_disk(dir: &Path, key: &MathKey, pdfs: &mut PdfMemo) -> Option<Arc<MathRe
     let mut parts = idx.split_whitespace();
     let name = parts.next()?.to_string();
     let page: usize = parts.next()?.parse().ok()?;
+    let depth_bp: f32 = parts.next()?.parse().ok()?;
     if !name.starts_with("b-") || !name.ends_with(".pdf") || name.contains('/') {
         return None;
     }
@@ -358,24 +399,33 @@ fn from_disk(dir: &Path, key: &MathKey, pdfs: &mut PdfMemo) -> Option<Arc<MathRe
         pdf: Arc::clone(pdf),
         page,
         size_bp,
+        depth_bp,
     }))
 }
 
-/// Typeset equations synchronously without the disk cache (tests, tools).
-/// Returns each equation's natural size in bp, or the LaTeX error.
-pub fn typeset_blocking(items: &[(&str, f32)], preamble: &str, tc: &Toolchain) -> Vec<Result<(f32, f32), String>> {
-    let items: Vec<(MathKey, String, f32)> = items
+/// Typeset formulas synchronously without the disk cache (tests, tools).
+/// Returns each formula's (width, height+depth, depth) in bp, or the error.
+pub fn typeset_blocking(
+    items: &[(&str, f32, bool)],
+    preamble: &str,
+    tc: &Toolchain,
+) -> Vec<Result<(f32, f32, f32), String>> {
+    let reqs: Vec<Req> = items
         .iter()
-        .map(|(s, f)| (math_key(s, *f, preamble), s.to_string(), *f))
+        .map(|(s, f, d)| Req {
+            key: math_key(s, *f, *d, preamble),
+            src: s.to_string(),
+            size: *f,
+            display: *d,
+        })
         .collect();
     let dir = std::env::temp_dir().join(format!("BeamerX/typeset-{}", std::process::id()));
     let _ = fs::create_dir_all(&dir);
-    let out = compile_uncached(&items, preamble, tc, &dir);
+    let out = compile_uncached(&reqs, preamble, tc, &dir);
     let _ = fs::remove_dir_all(&dir);
-    items
-        .iter()
-        .map(|(k, _, _)| match out.iter().find(|(ok, _)| ok == k) {
-            Some((_, Ok(r))) => Ok(r.size_bp),
+    reqs.iter()
+        .map(|r| match out.iter().find(|(k, _)| *k == r.key) {
+            Some((_, Ok(m))) => Ok((m.size_bp.0, m.size_bp.1, m.depth_bp)),
             Some((_, Err(e))) => Err(e.clone()),
             None => Err("missing result".into()),
         })
@@ -383,7 +433,7 @@ pub fn typeset_blocking(items: &[(&str, f32)], preamble: &str, tc: &Toolchain) -
 }
 
 /// Compile a batch (runs on a worker thread).
-fn compile_batch(items: &[(MathKey, String, f32)], preamble: &str, tc: &Toolchain, cache_dir: &Path) -> BatchResult {
+fn compile_batch(items: &[Req], preamble: &str, tc: &Toolchain, cache_dir: &Path) -> BatchResult {
     let _span = tracing::debug_span!("math_batch", n = items.len()).entered();
     let started = Instant::now();
     let math_dir = cache_dir.join("math");
@@ -392,8 +442,8 @@ fn compile_batch(items: &[(MathKey, String, f32)], preamble: &str, tc: &Toolchai
     let mut pdfs = HashMap::new();
     let mut todo = Vec::new();
     for it in items {
-        match from_disk(&math_dir, &it.0, &mut pdfs) {
-            Some(r) => out.push((it.0, Ok(r))),
+        match from_disk(&math_dir, &it.key, &mut pdfs) {
+            Some(r) => out.push((it.key, Ok(r))),
             None => todo.push(it.clone()),
         }
     }
@@ -408,13 +458,13 @@ fn compile_batch(items: &[(MathKey, String, f32)], preamble: &str, tc: &Toolchai
     out
 }
 
-fn compile_uncached(items: &[(MathKey, String, f32)], preamble: &str, tc: &Toolchain, math_dir: &Path) -> BatchResult {
+fn compile_uncached(items: &[Req], preamble: &str, tc: &Toolchain, math_dir: &Path) -> BatchResult {
     // Reject structurally broken input early with a clear message.
     let mut ok_items = Vec::new();
     let mut out = Vec::new();
     for it in items {
-        match crate::export::math_problem(&it.1) {
-            Some(why) => out.push((it.0, Err(why.to_string()))),
+        match crate::export::math_problem(&it.src) {
+            Some(why) => out.push((it.key, Err(why.to_string()))),
             None => ok_items.push(it.clone()),
         }
     }
@@ -422,42 +472,49 @@ fn compile_uncached(items: &[(MathKey, String, f32)], preamble: &str, tc: &Toolc
         return out;
     }
     match compile_pages(&ok_items, preamble, tc) {
-        Ok((pdf, sizes)) if sizes.len() == ok_items.len() => {
-            let name = format!("b-{}.pdf", ok_items[0].0.hex());
+        Ok((pdf, sizes, depths)) if sizes.len() == ok_items.len() => {
+            let name = format!("b-{}.pdf", ok_items[0].key.hex());
             let pdf = Arc::new(pdf);
+            let depth = |i: usize| depths.get(i).copied().unwrap_or(0.0);
             if crate::assets::write_atomic(&math_dir.join(&name), &pdf).is_ok() {
                 for (page, it) in ok_items.iter().enumerate() {
-                    let _ =
-                        crate::assets::write_atomic(&idx_path(math_dir, &it.0), format!("{name} {page}\n").as_bytes());
+                    let _ = crate::assets::write_atomic(
+                        &idx_path(math_dir, &it.key),
+                        format!("{name} {page} {}\n", depth(page)).as_bytes(),
+                    );
                 }
             }
             for (page, it) in ok_items.iter().enumerate() {
                 let r = MathRender {
-                    key: it.0,
+                    key: it.key,
                     pdf: Arc::clone(&pdf),
                     page,
                     size_bp: sizes[page],
+                    depth_bp: depth(page),
                 };
-                out.push((it.0, Ok(Arc::new(r))));
+                out.push((it.key, Ok(Arc::new(r))));
             }
         }
         Ok(_) | Err(_) if ok_items.len() > 1 => {
-            // Isolate the failing equation(s).
+            // Isolate the failing formula(s).
             for it in &ok_items {
                 out.extend(compile_uncached(std::slice::from_ref(it), preamble, tc, math_dir));
             }
         }
         Ok(_) => out.push((
-            ok_items[0].0,
+            ok_items[0].key,
             Err("unexpected LaTeX output (page count mismatch)".into()),
         )),
-        Err(e) => out.push((ok_items[0].0, Err(e))),
+        Err(e) => out.push((ok_items[0].key, Err(e))),
     }
     out
 }
 
-fn compile_pages(items: &[(MathKey, String, f32)], preamble: &str, tc: &Toolchain) -> Result<Compiled, String> {
-    let work = std::env::temp_dir().join(format!("BeamerX/math-{}-{}", std::process::id(), items[0].0.hex()));
+/// A compiled PDF, its page sizes and the depth of each formula (bp).
+type Compiled = (Vec<u8>, Vec<(f32, f32)>, Vec<f32>);
+
+fn compile_pages(items: &[Req], preamble: &str, tc: &Toolchain) -> Result<Compiled, String> {
+    let work = std::env::temp_dir().join(format!("BeamerX/math-{}-{}", std::process::id(), items[0].key.hex()));
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let res = (|| {
@@ -471,7 +528,8 @@ fn compile_pages(items: &[(MathKey, String, f32)], preamble: &str, tc: &Toolchai
             })?;
         let pdf = fs::read(pdf_path).map_err(|e| e.to_string())?;
         let sizes = pdf_raster::page_sizes(&pdf).map_err(|e| format!("{e:#}"))?;
-        Ok((pdf, sizes))
+        let depths = parse_depths(&fs::read_to_string(work.join("eq.log")).unwrap_or_default());
+        Ok((pdf, sizes, depths))
     })();
     let _ = fs::remove_dir_all(&work);
     res
@@ -530,13 +588,14 @@ mod tests {
 
     #[test]
     fn keys_depend_on_all_inputs() {
-        let a = math_key("x", 20.0, "");
-        assert_eq!(a, math_key("x", 20.0, ""));
-        assert_ne!(a, math_key("y", 20.0, ""));
-        assert_ne!(a, math_key("x", 21.0, ""));
-        assert_ne!(a, math_key("x", 20.0, "\\newcommand{\\R}{x}"));
+        let a = math_key("x", 20.0, false, "");
+        assert_eq!(a, math_key("x", 20.0, false, ""));
+        assert_ne!(a, math_key("y", 20.0, false, ""));
+        assert_ne!(a, math_key("x", 21.0, false, ""));
+        assert_ne!(a, math_key("x", 20.0, true, ""));
+        assert_ne!(a, math_key("x", 20.0, false, "\\newcommand{\\R}{x}"));
         // Length-prefixing prevents ambiguity between preamble and source.
-        assert_ne!(math_key("bc", 20.0, "a"), math_key("c", 20.0, "ab"));
+        assert_ne!(math_key("bc", 20.0, false, "a"), math_key("c", 20.0, false, "ab"));
     }
 
     #[test]
@@ -546,17 +605,26 @@ mod tests {
     }
 
     #[test]
+    fn depths_parse_from_log() {
+        let log = "junk\nBXDIM 15.03816pt5.00195pt37.22072pt\nmore\nBXDIM 10.0pt 0.0pt 5.0pt\n";
+        let d = parse_depths(log);
+        assert_eq!(d.len(), 2);
+        assert!((d[0] - 5.00195 / PT_PER_BP).abs() < 1e-4);
+        assert_eq!(d[1], 0.0);
+    }
+
+    #[test]
     fn debounce_then_dispatch_without_engine() {
         let dir = std::env::temp_dir().join("BeamerX/test-math-cache");
         let mut m = MathService::new(None, dir, Arc::new(|| {}));
         let t0 = Instant::now();
-        assert!(matches!(m.request("x^2", 20.0, t0), MathStatus::Pending));
+        assert!(matches!(m.request("x^2", 20.0, false, t0), MathStatus::Pending));
         let (_, next) = m.pump(t0);
         assert!(next.is_some(), "should wait for debounce");
         let t1 = t0 + DEBOUNCE + Duration::from_millis(1);
-        m.request("x^2", 20.0, t1);
+        m.request("x^2", 20.0, false, t1);
         m.pump(t1);
-        match m.request("x^2", 20.0, t1) {
+        match m.request("x^2", 20.0, false, t1) {
             MathStatus::Failed(msg) => assert!(msg.contains("No LaTeX engine")),
             _ => panic!("expected failure without engine"),
         }
@@ -567,12 +635,12 @@ mod tests {
         let dir = std::env::temp_dir().join("BeamerX/test-math-cache");
         let mut m = MathService::new(None, dir, Arc::new(|| {}));
         let t0 = Instant::now();
-        m.request("x", 20.0, t0);
+        m.request("x", 20.0, false, t0);
         // User keeps typing; "x" is no longer requested.
         let t1 = t0 + Duration::from_secs(5);
-        m.request("x+1", 20.0, t1);
+        m.request("x+1", 20.0, false, t1);
         m.pump(t1);
-        assert!(m.peek("x", 20.0).is_none());
-        assert!(!m.entries.contains_key(&m.key_for("x", 20.0)));
+        assert!(m.peek("x", 20.0, false).is_none());
+        assert!(!m.entries.contains_key(&m.key_for("x", 20.0, false)));
     }
 }

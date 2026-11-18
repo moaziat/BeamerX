@@ -43,7 +43,7 @@ const STEPS: [&str; 19] = [
     "finish_editing",
     "type_on_selected_text",
     "click_selected_text_to_edit",
-    "insert_equation_typeset",
+    "type_inline_math",
     "insert_shape",
     "drag_text",
     "undo_redo",
@@ -57,6 +57,13 @@ const STEPS: [&str; 19] = [
     "export_pdf",
     "present",
 ];
+
+/// Is the on-slide text editor focused (caret in a text box)?
+fn slide_editor_focused(app: &BeamerApp, ctx: &egui::Context) -> bool {
+    app.ed
+        .editing_text
+        .is_some_and(|id| ctx.memory(|m| m.has_focus(crate::editor::text_edit::widget_id(id))))
+}
 
 fn key(k: Key, pressed: bool) -> Event {
     Event::Key {
@@ -154,7 +161,7 @@ impl Smoke {
                 let Some(id) = self.text_id else {
                     return Poll::Fail("needs step 1".into());
                 };
-                if sub == 0 || !ctx.text_edit_focused() {
+                if sub == 0 || !slide_editor_focused(app, ctx) {
                     return if sub > 30 {
                         Poll::Fail("inline editor never got focus".into())
                     } else {
@@ -257,7 +264,7 @@ impl Smoke {
                     }),
                     3..=8 => {}
                     9 => {
-                        if app.ed.editing_text != Some(id) || !ctx.text_edit_focused() {
+                        if app.ed.editing_text != Some(id) || !slide_editor_focused(app, ctx) {
                             return Poll::Fail("click on selected text did not start focused editing".into());
                         }
                         // Typed at the click position (near the start).
@@ -287,29 +294,66 @@ impl Smoke {
                 }
                 Poll::Wait
             }
-            "insert_equation_typeset" => {
-                if sub == 0 {
-                    app.on_action(MenuAction::InsertEquation);
-                    let id = app.ed.selection[0];
-                    let o = app.ed.object(id).cloned().expect("inserted");
-                    let mut k = o.kind.clone();
-                    if let ObjectKind::Equation(e) = &mut k {
-                        e.source = r"\frac{a}{b} + \sqrt{x^2+1}".into();
+            "type_inline_math" => {
+                // Click at the end of the text, type `$f(x)=x^2$`, and wait
+                // until LaTeX has rendered it inline.
+                let Some(id) = self.text_id else {
+                    return Poll::Fail("needs step 1".into());
+                };
+                let Some(o) = app.ed.object(id).cloned() else {
+                    return Poll::Fail("text gone".into());
+                };
+                let ObjectKind::Text(t) = &o.kind else {
+                    return Poll::Fail("not text".into());
+                };
+                let p = view.pt(o.rect.right() - 2.0, o.rect.y + o.rect.h * 0.5);
+                match sub {
+                    0 => {
+                        app.ed.selection.clear();
+                        app.inject_events().push(Event::PointerMoved(p));
                     }
-                    app.ed.set_object(id, k, o.rect, None);
-                    return Poll::Wait;
+                    1 => app.inject_events().push(Event::PointerButton {
+                        pos: p,
+                        button: PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Modifiers::NONE,
+                    }),
+                    2 => app.inject_events().push(Event::PointerButton {
+                        pos: p,
+                        button: PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Modifiers::NONE,
+                    }),
+                    3..=6 => {}
+                    7 => {
+                        if app.ed.editing_text != Some(id) {
+                            return Poll::Fail("one click on text did not start editing".into());
+                        }
+                        app.inject_events().push(key(Key::End, true));
+                    }
+                    8 => app.inject_events().push(Event::Text(" with $f(x)=x^2$".into())),
+                    _ => {
+                        if !t.text.ends_with("with $f(x)=x^2$") {
+                            return if sub > 40 {
+                                Poll::Fail(format!("text is {:?}", t.text))
+                            } else {
+                                Poll::Wait
+                            };
+                        }
+                        // Closed math renders while still editing.
+                        if app.math.peek("f(x)=x^2", t.font_size, false).is_some() {
+                            match sub {
+                                s if s < 1000 && app.ed.editing_text.is_some() => {
+                                    app.inject_events().push(key(Key::Escape, true));
+                                    self.sub = 1000;
+                                }
+                                _ if app.ed.editing_text.is_none() => return Poll::Done,
+                                _ => {}
+                            }
+                        }
+                    }
                 }
-                let id = app.ed.selection.first().copied();
-                let Some(o) = id.and_then(|id| app.ed.object(id)) else {
-                    return Poll::Fail("equation lost".into());
-                };
-                let ObjectKind::Equation(e) = &o.kind else {
-                    return Poll::Fail("not an equation".into());
-                };
-                match app.math.peek(&e.source, e.font_size) {
-                    Some(r) if (o.rect.w - r.size_bp.0).abs() < 0.01 && o.rect.w > 10.0 => Poll::Done,
-                    _ => Poll::Wait,
-                }
+                Poll::Wait
             }
             "insert_shape" => {
                 let n = app.ed.slide().objects.len();
@@ -527,7 +571,7 @@ impl Smoke {
             }
             "present" => {
                 match sub {
-                    0 => app.start_presenting(),
+                    0 => app.start_presenting(None),
                     5 => app.inject_events().push(key(Key::ArrowRight, true)),
                     6 => app.inject_events().push(key(Key::ArrowRight, false)),
                     8 => {

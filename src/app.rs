@@ -3,6 +3,7 @@
 use crate::assets::{AssetMeta, AssetStore};
 use crate::document::{Document, ImageRef, Object, ObjectKind, Rect, SLIDE_H, SLIDE_W, SlideId};
 use crate::editor::canvas::{self, CanvasRequest, CanvasState};
+use crate::editor::text_edit::Caret;
 use crate::editor::{Editor, Tool, Zoom, inspector, slides_panel};
 use crate::jobs::WorkerPool;
 use crate::latex::Toolchain;
@@ -66,6 +67,16 @@ struct Busy {
     exporting: Option<(String, Arc<AtomicBool>)>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RibbonTab {
+    Home,
+    Insert,
+    Design,
+    Arrange,
+    SlideShow,
+    View,
+}
+
 struct Presenting {
     index: usize,
     was_fullscreen: bool,
@@ -101,6 +112,9 @@ pub struct BeamerApp {
     presenting: Option<Presenting>,
     pub perf: FrameStats,
     pub show_hud: bool,
+    tab: RibbonTab,
+    show_format_pane: bool,
+    show_props: bool,
     toasts: Vec<Toast>,
     window_title: String,
     autosave: Autosave,
@@ -156,6 +170,9 @@ impl BeamerApp {
             presenting: None,
             perf: FrameStats::default(),
             show_hud: false,
+            tab: RibbonTab::Home,
+            show_format_pane: false,
+            show_props: false,
             toasts: Vec::new(),
             window_title: String::new(),
             autosave: Autosave::default(),
@@ -655,7 +672,7 @@ impl BeamerApp {
 
     pub fn on_action(&mut self, a: MenuAction) {
         use MenuAction as A;
-        let text_focus = self.ctx.text_edit_focused();
+        let text_focus = self.ctx.text_edit_focused() || self.slide_text_focused();
         match a {
             A::About => {
                 let _ = rfd::MessageDialog::new()
@@ -708,7 +725,7 @@ impl BeamerApp {
             A::Delete if !text_focus => self.ed.delete_selection(),
             A::Delete => {}
             A::InsertText => self.insert_kind(Tool::Text),
-            A::InsertEquation => self.insert_kind(Tool::Equation),
+            A::InsertMath => self.insert_math(),
             A::InsertImage => self.insert_image_dialog(),
             A::InsertRectangle => self.insert_kind(Tool::Shape(ShapeKind::Rectangle)),
             A::InsertEllipse => self.insert_kind(Tool::Shape(ShapeKind::Ellipse)),
@@ -731,7 +748,7 @@ impl BeamerApp {
                 let c = self.ed.current;
                 self.ed.move_slide(c, c + 1);
             }
-            A::Present => self.start_presenting(),
+            A::Present => self.start_presenting(None),
             A::ZoomIn => self.zoom_by(1.25),
             A::ZoomOut => self.zoom_by(0.8),
             A::ZoomToFit => self.ed.zoom = Zoom::Fit,
@@ -743,6 +760,14 @@ impl BeamerApp {
             }
             A::TogglePerfHud => self.show_hud = !self.show_hud,
         }
+    }
+
+    /// Is the caret in a text box on the slide?
+    fn slide_text_focused(&self) -> bool {
+        self.ed.editing_text.is_some_and(|id| {
+            self.ctx
+                .memory(|m| m.has_focus(crate::editor::text_edit::widget_id(id)))
+        })
     }
 
     fn insert_kind(&mut self, tool: Tool) {
@@ -757,19 +782,31 @@ impl BeamerApp {
             ObjectKind::Shape(_) => self.ed.default_rect(90.0, 55.0),
             ObjectKind::Text(t) => self
                 .ed
-                .default_rect(220.0, t.font_size * crate::document::typeset::LINE_SPREAD),
-            ObjectKind::Equation(e) => self.ed.default_rect(e.font_size * 3.0, e.font_size * 1.2),
+                .default_rect(240.0, t.font_size * crate::document::typeset::LINE_SPREAD),
             ObjectKind::Image(_) => return,
         };
         let is_text = matches!(kind, ObjectKind::Text(_));
-        let is_eq = matches!(kind, ObjectKind::Equation(_));
         let id = self.ed.insert_object(kind, rect);
         if is_text {
-            self.ed.editing_text = Some(id);
+            canvas::begin_text_edit(&mut self.ed, &mut self.canvas, id, Caret::End);
         }
-        if is_eq {
-            self.ed.focus_source = true;
+    }
+
+    /// Insert `$$` with the caret between, in the text being edited or in a
+    /// new text box. Typing then produces inline math.
+    pub fn insert_math(&mut self) {
+        if crate::editor::text_edit::insert_at_caret(&mut self.ed, &mut self.canvas.rich, "$$", 1) {
+            return;
         }
+        let t = crate::document::TextBox {
+            text: "$$".into(),
+            ..Default::default()
+        };
+        let rect = self
+            .ed
+            .default_rect(240.0, t.font_size * crate::document::typeset::LINE_SPREAD);
+        let id = self.ed.insert_object(ObjectKind::Text(t), rect);
+        canvas::begin_text_edit(&mut self.ed, &mut self.canvas, id, Caret::Index(1));
     }
 
     fn zoom_by(&mut self, f: f32) {
@@ -785,14 +822,14 @@ impl BeamerApp {
         };
     }
 
-    pub fn start_presenting(&mut self) {
+    pub fn start_presenting(&mut self, from: Option<usize>) {
         if self.presenting.is_some() {
             return;
         }
-        self.ed.editing_text = None;
+        canvas::finish_text_edit(&mut self.ed, &mut self.canvas);
         let was_fullscreen = self.ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
         self.presenting = Some(Presenting {
-            index: self.ed.current,
+            index: from.unwrap_or(self.ed.current),
             was_fullscreen,
         });
         self.ctx.send_viewport_cmd(ViewportCommand::Fullscreen(true));
@@ -858,6 +895,7 @@ impl BeamerApp {
                 textures: &mut self.textures,
                 math: &mut self.math,
                 now: Instant::now(),
+                text_heights: None,
             };
             renderer::paint_slide(
                 &painter,
@@ -876,83 +914,530 @@ impl BeamerApp {
         }
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) -> bool {
+    // ---------------------------------------------------------------------
+    // Ribbon (PowerPoint-style)
+    // ---------------------------------------------------------------------
+
+    fn ribbon(&mut self, ui: &mut egui::Ui) -> bool {
         let mut insert_image = false;
+        // Tab row: File menu, tabs, quick actions.
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let tool = self.ed.tool;
-            let tools: [(&str, &str, Tool); 7] = [
-                ("Select", "Select and move (V)", Tool::Select),
-                ("Text", "Text box (T): click on the slide and type", Tool::Text),
-                ("Equation", "LaTeX equation (E)", Tool::Equation),
-                ("Rect", "Rectangle (R)", Tool::Shape(ShapeKind::Rectangle)),
-                ("Ellipse", "Ellipse (O)", Tool::Shape(ShapeKind::Ellipse)),
-                ("Line", "Line (L)", Tool::Shape(ShapeKind::Line)),
-                ("Arrow", "Arrow (A)", Tool::Shape(ShapeKind::Arrow)),
-            ];
-            for (label, tip, t) in tools {
-                if ui.selectable_label(tool == t, label).on_hover_text(tip).clicked() {
-                    self.ed.set_tool(t);
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let file = egui::Button::new(RichText::new("  File  ").color(Color32::WHITE).strong()).fill(RIBBON_ACCENT);
+            egui::containers::menu::MenuButton::from_button(file).ui(ui, |ui| {
+                ui.set_min_width(220.0);
+                for (label, action) in [
+                    ("New", MenuAction::New),
+                    ("Open…", MenuAction::Open),
+                    ("Save", MenuAction::Save),
+                    ("Save As…", MenuAction::SaveAs),
+                    ("Export PDF…", MenuAction::ExportPdf),
+                    ("Export Beamer (.tex)…", MenuAction::ExportBeamer),
+                ] {
+                    if matches!(action, MenuAction::Save | MenuAction::ExportPdf) {
+                        ui.separator();
+                    }
+                    if ui.button(label).clicked() {
+                        self.on_action(action);
+                    }
                 }
-            }
-            if ui
-                .button("Image…")
-                .on_hover_text("Insert PNG/JPEG (I), or drop files from Finder")
-                .clicked()
-            {
-                insert_image = true;
-            }
-            ui.separator();
-            if ui
-                .add_enabled(self.ed.history.can_undo(), egui::Button::new("Undo"))
-                .on_hover_text("Undo (⌘Z)")
-                .clicked()
-            {
-                self.ed.undo();
-            }
-            if ui
-                .add_enabled(self.ed.history.can_redo(), egui::Button::new("Redo"))
-                .on_hover_text("Redo (⇧⌘Z)")
-                .clicked()
-            {
-                self.ed.redo();
-            }
-            ui.separator();
-            if ui.button("−").on_hover_text("Zoom out (⌘−)").clicked() {
-                self.zoom_by(0.8);
-            }
-            let pct = self.canvas.last_view.map(|v| v.scale * 100.0).unwrap_or(100.0);
-            if ui
-                .button(format!("{pct:.0}%"))
-                .on_hover_text("Zoom to fit (⌘0)")
-                .clicked()
-            {
-                self.ed.zoom = Zoom::Fit;
-            }
-            if ui.button("+").on_hover_text("Zoom in (⌘=)").clicked() {
-                self.zoom_by(1.25);
+            });
+            ui.add_space(6.0);
+            for (tab, label) in [
+                (RibbonTab::Home, "Home"),
+                (RibbonTab::Insert, "Insert"),
+                (RibbonTab::Design, "Design"),
+                (RibbonTab::Arrange, "Arrange"),
+                (RibbonTab::SlideShow, "Slide Show"),
+                (RibbonTab::View, "View"),
+            ] {
+                let selected = self.tab == tab;
+                let text = if selected {
+                    RichText::new(label).strong().color(RIBBON_ACCENT)
+                } else {
+                    RichText::new(label)
+                };
+                let r = ui.add(egui::Button::new(text).frame(false).min_size(egui::vec2(64.0, 24.0)));
+                if selected {
+                    ui.painter().hline(
+                        r.rect.x_range().shrink(8.0),
+                        r.rect.bottom(),
+                        egui::Stroke::new(2.5, RIBBON_ACCENT),
+                    );
+                }
+                if r.clicked() {
+                    self.tab = tab;
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let present =
+                    egui::Button::new(RichText::new("Present").color(Color32::WHITE).strong()).fill(RIBBON_ACCENT);
                 if ui
-                    .button(RichText::new("Present").strong())
-                    .on_hover_text("Full-screen presentation (⌘↩)")
+                    .add(present)
+                    .on_hover_text("Present from the current slide (⌘↩)")
                     .clicked()
                 {
-                    self.start_presenting();
-                }
-                if ui.button("Export PDF").on_hover_text("⇧⌘E").clicked() {
-                    self.export(true);
+                    self.start_presenting(None);
                 }
                 if ui
-                    .button("Export Beamer")
-                    .on_hover_text("Self-contained .tex folder (⌘E)")
+                    .add_enabled(self.ed.history.can_redo(), egui::Button::new("Redo"))
+                    .on_hover_text("⇧⌘Z")
                     .clicked()
                 {
-                    self.export(false);
+                    self.ed.redo();
+                }
+                if ui
+                    .add_enabled(self.ed.history.can_undo(), egui::Button::new("Undo"))
+                    .on_hover_text("⌘Z")
+                    .clicked()
+                {
+                    self.ed.undo();
                 }
             });
         });
+        ui.add_space(2.0);
+        // Ribbon body.
+        ui.horizontal_top(|ui| {
+            ui.set_height(RIBBON_H);
+            match self.tab {
+                RibbonTab::Home => self.tab_home(ui, &mut insert_image),
+                RibbonTab::Insert => self.tab_insert(ui, &mut insert_image),
+                RibbonTab::Design => self.tab_design(ui),
+                RibbonTab::Arrange => self.tab_arrange(ui),
+                RibbonTab::SlideShow => self.tab_slideshow(ui),
+                RibbonTab::View => self.tab_view(ui),
+            }
+        });
         insert_image
+    }
+
+    fn tab_home(&mut self, ui: &mut egui::Ui, insert_image: &mut bool) {
+        group(ui, "Clipboard", |ui| {
+            if big(ui, "Paste").clicked() {
+                self.on_action(MenuAction::Paste);
+            }
+            ui.vertical(|ui| {
+                if ui.small_button("Cut").clicked() {
+                    self.on_action(MenuAction::Cut);
+                }
+                if ui.small_button("Copy").clicked() {
+                    self.on_action(MenuAction::Copy);
+                }
+                if ui.small_button("Duplicate").clicked() {
+                    self.ed.duplicate_selection();
+                }
+            });
+        });
+        group(ui, "Slides", |ui| {
+            if big(ui, "New\nSlide").clicked() {
+                self.ed.new_slide();
+            }
+            ui.vertical(|ui| {
+                if ui.small_button("Duplicate").clicked() {
+                    self.ed.duplicate_slide();
+                }
+                if ui.small_button("Delete").clicked() {
+                    self.ed.delete_slide();
+                }
+            });
+        });
+        self.font_group(ui);
+        self.paragraph_group(ui);
+        group(ui, "Drawing", |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    self.tool_button(ui, "Text Box", Tool::Text);
+                    self.tool_button(ui, "Rectangle", Tool::Shape(ShapeKind::Rectangle));
+                    self.tool_button(ui, "Oval", Tool::Shape(ShapeKind::Ellipse));
+                });
+                ui.horizontal(|ui| {
+                    self.tool_button(ui, "Line", Tool::Shape(ShapeKind::Line));
+                    self.tool_button(ui, "Arrow", Tool::Shape(ShapeKind::Arrow));
+                    if ui.small_button("Picture…").clicked() {
+                        *insert_image = true;
+                    }
+                });
+            });
+            self.shape_style(ui);
+        });
+        group(ui, "Math", |ui| {
+            if big(ui, "Math\n$ … $")
+                .on_hover_text("Insert inline LaTeX math (⌥⌘E). Or just type $…$ in any text box.")
+                .clicked()
+            {
+                self.insert_math();
+            }
+        });
+        group(ui, "Arrange", |ui| {
+            ui.vertical(|ui| {
+                if ui.small_button("Bring to Front").clicked() {
+                    self.ed.z_order(crate::editor::ZOrder::Front);
+                }
+                if ui.small_button("Send to Back").clicked() {
+                    self.ed.z_order(crate::editor::ZOrder::Back);
+                }
+                if ui.small_button("Select All").clicked() {
+                    self.on_action(MenuAction::SelectAll);
+                }
+            });
+        });
+    }
+
+    fn tool_button(&mut self, ui: &mut egui::Ui, label: &str, tool: Tool) {
+        let tip = match tool {
+            Tool::Text => "Text box (T): click on the slide, then type. Use $…$ for math.",
+            Tool::Shape(ShapeKind::Rectangle) => "Rectangle (R): click or drag on the slide",
+            Tool::Shape(ShapeKind::Ellipse) => "Oval (O): click or drag on the slide",
+            Tool::Shape(ShapeKind::Line) => "Line (L): drag on the slide",
+            Tool::Shape(ShapeKind::Arrow) => "Arrow (A): drag on the slide",
+            Tool::Select => "Select (V)",
+        };
+        if ui
+            .selectable_label(self.ed.tool == tool, label)
+            .on_hover_text(tip)
+            .clicked()
+        {
+            self.ed.set_tool(if self.ed.tool == tool { Tool::Select } else { tool });
+        }
+    }
+
+    fn font_group(&mut self, ui: &mut egui::Ui) {
+        let style = self.ed.selected_text_style();
+        group(ui, "Font", |ui| {
+            ui.add_enabled_ui(style.is_some(), |ui| {
+                let mut t = style.clone().unwrap_or_default();
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Latin Modern Sans").small());
+                        if inspector::font_size_edit(ui, &mut t.font_size) {
+                            let v = t.font_size;
+                            self.ed.update_selected_text(0, |x| x.font_size = v);
+                        }
+                        if ui.small_button("A+").on_hover_text("Increase font size").clicked() {
+                            self.ed.update_selected_text(0, |x| {
+                                x.font_size = (x.font_size + 2.0).min(crate::document::MAX_FONT_SIZE)
+                            });
+                        }
+                        if ui.small_button("A−").on_hover_text("Decrease font size").clicked() {
+                            self.ed.update_selected_text(0, |x| {
+                                x.font_size = (x.font_size - 2.0).max(crate::document::MIN_FONT_SIZE)
+                            });
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(t.bold, RichText::new(" B ").strong())
+                            .on_hover_text("Bold")
+                            .clicked()
+                        {
+                            let v = !t.bold;
+                            self.ed.update_selected_text(1, |x| x.bold = v);
+                        }
+                        if ui
+                            .selectable_label(t.italic, RichText::new(" I ").italics())
+                            .on_hover_text("Italic")
+                            .clicked()
+                        {
+                            let v = !t.italic;
+                            self.ed.update_selected_text(2, |x| x.italic = v);
+                        }
+                        ui.label(RichText::new("Color").small());
+                        if inspector::color_edit(ui, &mut t.color) {
+                            let v = t.color;
+                            self.ed.update_selected_text(3, |x| x.color = v);
+                        }
+                    });
+                });
+            });
+        });
+    }
+
+    fn paragraph_group(&mut self, ui: &mut egui::Ui) {
+        let style = self.ed.selected_text_style();
+        group(ui, "Paragraph", |ui| {
+            ui.add_enabled_ui(style.is_some(), |ui| {
+                let t = style.clone().unwrap_or_default();
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        for (a, label) in [
+                            (crate::document::TextAlign::Left, "Left"),
+                            (crate::document::TextAlign::Center, "Center"),
+                            (crate::document::TextAlign::Right, "Right"),
+                        ] {
+                            if ui.selectable_label(t.align == a, label).clicked() {
+                                self.ed.update_selected_text(4, |x| x.align = a);
+                            }
+                        }
+                    });
+                    if ui.selectable_label(t.bullets, "• Bullets").clicked() {
+                        let v = !t.bullets;
+                        self.ed.update_selected_text(5, |x| x.bullets = v);
+                    }
+                });
+            });
+        });
+    }
+
+    fn shape_style(&mut self, ui: &mut egui::Ui) {
+        let shape = self
+            .ed
+            .selection
+            .iter()
+            .find_map(|id| match self.ed.object(*id).map(|o| &o.kind) {
+                Some(ObjectKind::Shape(s)) => Some(s.clone()),
+                _ => None,
+            });
+        ui.add_enabled_ui(shape.is_some(), |ui| {
+            let mut s = shape.unwrap_or_else(|| crate::document::Shape::new(ShapeKind::Rectangle));
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Fill").small());
+                    let mut fill = s.fill.unwrap_or(crate::document::Color::LIGHT_FILL);
+                    if inspector::color_edit(ui, &mut fill) {
+                        self.ed.update_selected_shapes(10, |x| {
+                            if !x.kind.is_linear() {
+                                x.fill = Some(fill)
+                            }
+                        });
+                    }
+                    if ui.small_button("None").on_hover_text("No fill").clicked() {
+                        self.ed.update_selected_shapes(10, |x| x.fill = None);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Outline").small());
+                    if inspector::color_edit(ui, &mut s.stroke) {
+                        let v = s.stroke;
+                        self.ed.update_selected_shapes(11, |x| x.stroke = v);
+                    }
+                    let w = egui::DragValue::new(&mut s.stroke_width)
+                        .speed(0.1)
+                        .range(0.0..=30.0)
+                        .max_decimals(1)
+                        .suffix(" pt");
+                    if ui.add(w).changed() {
+                        let v = s.stroke_width;
+                        self.ed.update_selected_shapes(12, |x| x.stroke_width = v);
+                    }
+                });
+            });
+        });
+    }
+
+    fn tab_insert(&mut self, ui: &mut egui::Ui, insert_image: &mut bool) {
+        group(ui, "Slides", |ui| {
+            if big(ui, "New\nSlide").clicked() {
+                self.ed.new_slide();
+            }
+        });
+        group(ui, "Text", |ui| {
+            if big(ui, "Text\nBox")
+                .on_hover_text("Insert a text box and start typing")
+                .clicked()
+            {
+                self.insert_kind(Tool::Text);
+            }
+            if big(ui, "Math\n$ … $")
+                .on_hover_text("Inline LaTeX math. Type $…$ in any text box; $$…$$ for a centred formula.")
+                .clicked()
+            {
+                self.insert_math();
+            }
+        });
+        group(ui, "Images", |ui| {
+            if big(ui, "Picture…")
+                .on_hover_text("PNG or JPEG. You can also drop files from Finder onto the slide.")
+                .clicked()
+            {
+                *insert_image = true;
+            }
+        });
+        group(ui, "Shapes", |ui| {
+            for (label, k) in [
+                ("Rectangle", ShapeKind::Rectangle),
+                ("Oval", ShapeKind::Ellipse),
+                ("Line", ShapeKind::Line),
+                ("Arrow", ShapeKind::Arrow),
+            ] {
+                if big(ui, label).clicked() {
+                    self.insert_kind(Tool::Shape(k));
+                }
+            }
+        });
+        ui.label(
+            RichText::new("Math is written like LaTeX inside text:\n$E = mc^2$ inline  ·  $$\\int_0^1 f$$ centred  ·  \\$ for a dollar sign")
+                .small()
+                .weak(),
+        );
+    }
+
+    fn tab_design(&mut self, ui: &mut egui::Ui) {
+        group(ui, "Background", |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Slide color");
+                    let mut bg = self.ed.slide().background;
+                    if inspector::color_edit(ui, &mut bg) {
+                        let before = self.ed.slide().background;
+                        let sid = self.ed.slide_id();
+                        self.ed.exec_merging(
+                            Command::SetBackground {
+                                slide: sid,
+                                before,
+                                after: bg,
+                            },
+                            Some(crate::commands::MergeKey::Background(sid)),
+                        );
+                    }
+                });
+                if ui.small_button("Apply to All Slides").clicked() {
+                    self.ed.apply_background_to_all();
+                }
+            });
+        });
+        group(ui, "Presentation", |ui| {
+            if big(ui, "Title &\nLaTeX…")
+                .on_hover_text("Title, author and the LaTeX preamble (macros, packages)")
+                .clicked()
+            {
+                self.show_props = true;
+            }
+        });
+    }
+
+    fn tab_arrange(&mut self, ui: &mut egui::Ui) {
+        use crate::editor::{Align, ZOrder};
+        group(ui, "Align", |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    for (l, a) in [
+                        ("Left", Align::Left),
+                        ("Center", Align::HCenter),
+                        ("Right", Align::Right),
+                    ] {
+                        if ui.small_button(l).clicked() {
+                            self.ed.align(a);
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    for (l, a) in [
+                        ("Top", Align::Top),
+                        ("Middle", Align::VCenter),
+                        ("Bottom", Align::Bottom),
+                    ] {
+                        if ui.small_button(l).clicked() {
+                            self.ed.align(a);
+                        }
+                    }
+                });
+            });
+        });
+        group(ui, "Order", |ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    if ui.small_button("Bring to Front").clicked() {
+                        self.ed.z_order(ZOrder::Front);
+                    }
+                    if ui.small_button("Forward").clicked() {
+                        self.ed.z_order(ZOrder::Forward);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.small_button("Send to Back").clicked() {
+                        self.ed.z_order(ZOrder::Back);
+                    }
+                    if ui.small_button("Backward").clicked() {
+                        self.ed.z_order(ZOrder::Backward);
+                    }
+                });
+            });
+        });
+        group(ui, "Size & Position", |ui| {
+            let sel = (self.ed.selection.len() == 1)
+                .then(|| self.ed.selection[0])
+                .and_then(|id| self.ed.object(id).cloned());
+            ui.add_enabled_ui(sel.is_some(), |ui| {
+                let mut r = sel.as_ref().map(|o| o.rect).unwrap_or_default();
+                let is_text = matches!(sel.as_ref().map(|o| &o.kind), Some(ObjectKind::Text(_)));
+                egui::Grid::new("ribbon-geom")
+                    .num_columns(4)
+                    .spacing([4.0, 2.0])
+                    .show(ui, |ui| {
+                        ui.label("X");
+                        ui.add(egui::DragValue::new(&mut r.x).speed(0.5).max_decimals(1));
+                        ui.label("W");
+                        ui.add(
+                            egui::DragValue::new(&mut r.w)
+                                .speed(0.5)
+                                .range(1.0..=5000.0)
+                                .max_decimals(1),
+                        );
+                        ui.end_row();
+                        ui.label("Y");
+                        ui.add(egui::DragValue::new(&mut r.y).speed(0.5).max_decimals(1));
+                        ui.label("H");
+                        ui.add_enabled(
+                            !is_text,
+                            egui::DragValue::new(&mut r.h)
+                                .speed(0.5)
+                                .range(1.0..=5000.0)
+                                .max_decimals(1),
+                        );
+                        ui.end_row();
+                    });
+                if let Some(o) = sel
+                    && r != o.rect
+                {
+                    let key = Some(crate::commands::MergeKey::Object(o.id, 1));
+                    self.ed.set_object(o.id, o.kind.clone(), r.sanitized(), key);
+                }
+            });
+        });
+        group(ui, "Pane", |ui| {
+            if ui.selectable_label(self.show_format_pane, "Format\nPane").clicked() {
+                self.show_format_pane = !self.show_format_pane;
+            }
+        });
+    }
+
+    fn tab_slideshow(&mut self, ui: &mut egui::Ui) {
+        group(ui, "Start Slide Show", |ui| {
+            if big(ui, "From\nBeginning").clicked() {
+                self.start_presenting(Some(0));
+            }
+            if big(ui, "From Current\nSlide").clicked() {
+                self.start_presenting(None);
+            }
+        });
+        ui.label(
+            RichText::new("In the show: → / Space / click = next, ← = previous, Esc = end")
+                .small()
+                .weak(),
+        );
+    }
+
+    fn tab_view(&mut self, ui: &mut egui::Ui) {
+        group(ui, "Zoom", |ui| {
+            if big(ui, "Zoom\nOut").clicked() {
+                self.zoom_by(0.8);
+            }
+            if big(ui, "Zoom\nIn").clicked() {
+                self.zoom_by(1.25);
+            }
+            if big(ui, "Fit to\nWindow").clicked() {
+                self.ed.zoom = Zoom::Fit;
+            }
+            if big(ui, "100%").clicked() {
+                self.on_action(MenuAction::ActualSize);
+            }
+        });
+        group(ui, "Show", |ui| {
+            ui.vertical(|ui| {
+                ui.checkbox(&mut self.show_format_pane, "Format Pane");
+                ui.checkbox(&mut self.show_hud, "Performance HUD");
+            });
+        });
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -981,7 +1466,7 @@ impl BeamerApp {
             }
             if self.math.busy() > 0 {
                 ui.spinner();
-                ui.label(RichText::new("Typesetting equations…").small());
+                ui.label(RichText::new("Typesetting math…").small());
             }
             let mut cancel = false;
             if let Some((label, _)) = &self.busy.exporting {
@@ -1006,6 +1491,31 @@ impl BeamerApp {
                 ui.ctx().request_repaint_after(next.saturating_duration_since(now));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Zoom (PowerPoint keeps it bottom-right).
+                if ui
+                    .small_button("Fit")
+                    .on_hover_text("Fit slide to window (⌘0)")
+                    .clicked()
+                {
+                    self.ed.zoom = Zoom::Fit;
+                }
+                let cur = self.canvas.last_view.map(|v| v.scale).unwrap_or(1.0);
+                let mut pct = cur * 100.0;
+                let slider = egui::Slider::new(&mut pct, 25.0..=400.0)
+                    .logarithmic(true)
+                    .show_value(false);
+                if ui.add_sized([120.0, 16.0], slider).changed() {
+                    let center = match self.ed.zoom {
+                        Zoom::Manual { center, .. } => center,
+                        Zoom::Fit => (SLIDE_W * 0.5, SLIDE_H * 0.5),
+                    };
+                    self.ed.zoom = Zoom::Manual {
+                        scale: pct / 100.0,
+                        center,
+                    };
+                }
+                ui.label(RichText::new(format!("{:.0}%", cur * 100.0)).small());
+                ui.separator();
                 if self.ed.is_dirty() {
                     ui.label(RichText::new("Edited").small().weak());
                 }
@@ -1108,6 +1618,35 @@ impl BeamerApp {
     }
 }
 
+const RIBBON_ACCENT: Color32 = Color32::from_rgb(196, 62, 28);
+const RIBBON_H: f32 = 64.0;
+
+/// A labelled ribbon group with a separator after it.
+fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    let r = ui
+        .vertical(|ui| {
+            let row = ui.horizontal(|ui| {
+                ui.set_min_height(RIBBON_H - 18.0);
+                add(ui);
+            });
+            // Title centred under the group's own width (not the panel's).
+            let w = row.response.rect.width().max(40.0);
+            ui.add_sized([w, 14.0], egui::Label::new(RichText::new(title).small().weak()));
+        })
+        .response
+        .rect;
+    ui.add_space(6.0);
+    let x = ui.cursor().left();
+    ui.painter()
+        .vline(x, r.y_range(), ui.visuals().widgets.noninteractive.bg_stroke);
+    ui.add_space(8.0);
+}
+
+/// A large two-line ribbon button.
+fn big(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(egui::Button::new(label).min_size(egui::vec2(58.0, RIBBON_H - 18.0)))
+}
+
 impl eframe::App for BeamerApp {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         raw_input.events.append(&mut self.inject);
@@ -1160,10 +1699,10 @@ impl eframe::App for BeamerApp {
         self.handle_drops(&ctx);
 
         let mut insert_image = false;
-        egui::Panel::top("toolbar").show(ui, |ui| {
-            ui.add_space(3.0);
-            insert_image = self.toolbar(ui);
-            ui.add_space(3.0);
+        egui::Panel::top("ribbon").show(ui, |ui| {
+            ui.add_space(4.0);
+            insert_image = self.ribbon(ui);
+            ui.add_space(2.0);
         });
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
 
@@ -1173,6 +1712,7 @@ impl eframe::App for BeamerApp {
                 textures: &mut self.textures,
                 math: &mut self.math,
                 now,
+                text_heights: None,
             };
             let ed = &mut self.ed;
             egui::Panel::left("slides")
@@ -1192,14 +1732,30 @@ impl eframe::App for BeamerApp {
                     slides_panel::slides_ui(ui, ed, &mut sv);
                 });
         }
-        egui::Panel::right("inspector")
-            .resizable(true)
-            .default_size(290.0)
-            .size_range(220.0..=480.0)
-            .show(ui, |ui| {
-                ui.add_space(4.0);
-                inspector::inspector_ui(ui, &mut self.ed, &mut self.math, &self.assets, now);
-            });
+        if self.show_format_pane {
+            egui::Panel::right("format-pane")
+                .resizable(true)
+                .default_size(270.0)
+                .size_range(220.0..=440.0)
+                .show(ui, |ui| {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Format").strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Close").clicked() {
+                                self.show_format_pane = false;
+                            }
+                        });
+                    });
+                    ui.separator();
+                    inspector::format_pane_ui(ui, &mut self.ed, &self.assets);
+                });
+        }
+        if self.show_props {
+            let mut open = true;
+            inspector::properties_window(&ctx, &mut open, &mut self.ed, &mut self.math);
+            self.show_props = open;
+        }
         let mut req = None;
         egui::CentralPanel::no_frame().show(ui, |ui| {
             let mut sv = Services {
@@ -1207,8 +1763,8 @@ impl eframe::App for BeamerApp {
                 textures: &mut self.textures,
                 math: &mut self.math,
                 now,
+                text_heights: None,
             };
-            canvas::sync_equation_sizes(&mut self.ed, &sv);
             req = canvas::canvas_ui(ui, &mut self.ed, &mut self.canvas, &mut sv);
             let hovering_files = ui.input(|i| !i.raw.hovered_files.is_empty());
             if hovering_files {

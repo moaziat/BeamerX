@@ -52,20 +52,21 @@ fn main() -> anyhow::Result<()> {
     });
     objs.push(Object {
         id: next(),
-        rect: Rect::new(24.0, 150.0, 150.0, 30.0),
-        kind: ObjectKind::Equation(Equation {
-            source: r"\int_{\R} e^{-x^2}\,dx = \sqrt{\pi}".into(),
+        rect: Rect::new(24.0, 150.0, 210.0, 30.0),
+        kind: ObjectKind::Text(TextBox {
+            text: r"$$\int_{\R} e^{-x^2}\,dx = \sqrt{\pi}$$".into(),
             font_size: 18.0,
-            color: Color::BLACK,
+            ..Default::default()
         }),
     });
     objs.push(Object {
         id: next(),
-        rect: Rect::new(24.0, 200.0, 150.0, 30.0),
-        kind: ObjectKind::Equation(Equation {
-            source: r"\int_{\R^n} e^{-\lVert x \rVert^2}\,dx = \pi^{n/2}".into(),
+        rect: Rect::new(24.0, 200.0, 210.0, 30.0),
+        kind: ObjectKind::Text(TextBox {
+            text: r"In $n$ dimensions: $\int_{\R^n} e^{-\lVert x \rVert^2}\,dx = \pi^{n/2}$, see \$5 note.".into(),
             font_size: 14.0,
             color: Color::rgb(160, 30, 30),
+            ..Default::default()
         }),
     });
     objs.push(Object {

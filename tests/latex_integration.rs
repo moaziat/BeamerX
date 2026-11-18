@@ -72,19 +72,21 @@ fn sample_deck(store: &AssetStore) -> SaveSnapshot {
     add(
         &mut doc,
         s1,
-        Rect::new(20.0, 130.0, 100.0, 20.0),
-        ObjectKind::Equation(Equation {
-            source: "f(x) = \\int_{\\R} e^{-x^2}\\,dx % trailing comment".into(),
-            font_size: 18.0,
+        Rect::new(20.0, 130.0, 260.0, 20.0),
+        ObjectKind::Text(TextBox {
+            text: "Gauss: $f(x) = \\int_{\\R} e^{-x^2}\\,dx % trailing comment$ and\n$$\\sum_{n=1}^\\infty \\frac{1}{n^2} = \\frac{\\pi^2}{6}$$ costs \\$5".into(),
+            font_size: 14.0,
             color: Color::ACCENT,
+            ..Default::default()
         }),
     );
     add(
         &mut doc,
         s1,
         Rect::new(20.0, 170.0, 100.0, 20.0),
-        ObjectKind::Equation(Equation {
-            source: "\\frac{a}{b".into(), // broken: must not break the document
+        ObjectKind::Text(TextBox {
+            // Broken math must not break the document.
+            text: "broken $\\frac{a}{b$ here".into(),
             ..Default::default()
         }),
     );
@@ -181,11 +183,12 @@ fn cancelled_pdf_export_leaves_no_output() {
 fn equation_previews_typeset_in_batch_and_isolate_errors() {
     let Some(tc) = toolchain() else { return };
     let items = [
-        (r"E = mc^2", 20.0),
-        (r"\undefinedmacro{x}", 20.0),
-        (r"\sum_{n=1}^{\infty} \frac{1}{n^2}", 20.0),
-        (r"E = mc^2", 40.0),
-        (r"\R^n", 12.0),
+        (r"E = mc^2", 20.0, true),
+        (r"\undefinedmacro{x}", 20.0, false),
+        (r"\sum_{n=1}^{\infty} \frac{1}{n^2}", 20.0, true),
+        (r"E = mc^2", 40.0, true),
+        (r"\R^n", 12.0, false),
+        (r"f(x)", 20.0, false),
     ];
     let res = beamerx::math::typeset_blocking(&items, "\\newcommand{\\R}{\\mathbb{R}}\n\\usetheme{Madrid}", &tc);
     let a = res[0].as_ref().expect("simple equation");
@@ -204,4 +207,9 @@ fn equation_previews_typeset_in_batch_and_isolate_errors() {
         (big.0 / a.0 - 2.0).abs() < 0.02 && (big.1 / a.1 - 2.0).abs() < 0.02,
         "{big:?} vs {a:?}"
     );
+    // Inline math reports its depth below the baseline: f(x) descends
+    // (parentheses) by roughly a quarter of the font size.
+    let fx = res[5].as_ref().expect("inline f(x)");
+    assert!(fx.2 > 2.0 && fx.2 < 8.0, "depth of f(x) at 20pt: {fx:?}");
+    assert!((fx.1 - fx.2) > 10.0, "height above baseline: {fx:?}");
 }

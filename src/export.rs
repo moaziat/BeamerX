@@ -3,15 +3,16 @@
 //! Every object is placed absolutely with TikZ (`remember picture, overlay`)
 //! in slide-space bp coordinates, so geometry in the exported PDF matches the
 //! editor exactly. Text is typeset by TeX in Latin Modern Sans (the font the
-//! editor uses); equations are typeset by TeX in both the editor preview and
+//! editor uses); math (`$…$` in text boxes) is typeset by TeX in both the editor preview and
 //! the export using the same preamble, packages and font sizes.
 
 use crate::assets::AssetMeta;
 use crate::document::{
-    AssetId, Color, Document, Equation, Object, ObjectKind, Shape, ShapeKind, Slide, TextAlign, TextBox, typeset,
+    AssetId, Color, Document, Object, ObjectKind, Shape, ShapeKind, Slide, TextAlign, TextBox, typeset,
 };
 use crate::latex::{CompileOptions, Toolchain};
 use crate::persistence::SaveSnapshot;
+use crate::rich;
 use anyhow::{Context as _, Result, bail};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -100,7 +101,7 @@ pub fn math_problem(src: &str) -> Option<&'static str> {
                     return Some("unbalanced braces");
                 }
             }
-            '$' => return Some("`$` is not allowed inside an equation"),
+            '$' => return Some("`$` is not allowed inside math"),
             _ => {}
         }
     }
@@ -109,7 +110,7 @@ pub fn math_problem(src: &str) -> Option<&'static str> {
     }
     for bad in ["\\end{document}", "\\begin{document}", "\\documentclass"] {
         if src.contains(bad) {
-            return Some("document-level commands are not allowed in equations");
+            return Some("document-level commands are not allowed in math");
         }
     }
     None
@@ -139,7 +140,38 @@ fn font_cmd(size: f32) -> String {
 }
 
 /// Text box body: lines separated by `\\`, or a list for bullets.
+/// LaTeX for one paragraph's content (text escaped, math passed through).
+fn paragraph_tex(chars: &[char], para: &rich::Paragraph) -> String {
+    let math = |src: &std::ops::Range<usize>, display: bool| {
+        let src = rich::slice(chars, src);
+        match math_problem(&src) {
+            None => crate::math::math_mode(&src, display),
+            Some(why) => format!("\\textcolor{{red}}{{[math error: {}]}}", escape_text(why)),
+        }
+    };
+    match &para.kind {
+        rich::ParaKind::Display { src } => {
+            format!("\\hspace*{{\\fill}}{}\\hspace*{{\\fill}}", math(src, true))
+        }
+        rich::ParaKind::Normal(runs) => {
+            let mut out = String::new();
+            for r in runs {
+                match &r.kind {
+                    rich::RunKind::Text => out.push_str(&escape_text(&rich::unescape_text(&chars[r.range.clone()]))),
+                    rich::RunKind::Math { src } => out.push_str(&math(src, false)),
+                }
+            }
+            if out.trim().is_empty() { "\\mbox{}".into() } else { out }
+        }
+    }
+}
+
+/// Text box body: paragraphs separated by `\\`, or a list for bullets.
+/// Every paragraph starts with `\strut`, matching the editor's baseline
+/// convention.
 fn text_body(t: &TextBox) -> String {
+    let chars: Vec<char> = t.text.chars().collect();
+    let paras = rich::paragraphs(&chars);
     let mut out = String::new();
     if t.bullets {
         // No macro parameters (`#`) here: frame bodies are macro arguments.
@@ -149,31 +181,22 @@ fn text_body(t: &TextBox) -> String {
             "\\begin{{list}}{{}}{{\\setlength{{\\leftmargin}}{{{indent}bp}}\\setlength{{\\labelwidth}}{{{indent}bp}}\\setlength{{\\labelsep}}{{0pt}}\\setlength{{\\itemsep}}{{0pt}}\\setlength{{\\parsep}}{{0pt}}\\setlength{{\\topsep}}{{0pt}}\\setlength{{\\partopsep}}{{0pt}}\\setlength{{\\itemindent}}{{0pt}}\\setlength{{\\listparindent}}{{0pt}}}}"
         );
         let label = format!("\\item[{{\\makebox[{indent}bp][l]{{\\textbullet}}}}]");
-        for line in t.text.split('\n') {
-            if line.trim().is_empty() {
-                // Blank lines become vertical space of one line.
-                out.push_str("\\item[]\\strut");
-                continue;
-            }
-            out.push_str(&label);
+        for p in &paras {
+            let blank = matches!(&p.kind, rich::ParaKind::Normal(r) if r.iter().all(|r| matches!(r.kind, rich::RunKind::Text) && rich::slice(&chars, &r.range).trim().is_empty()));
+            let bullet = p.starts_line && !blank && !matches!(p.kind, rich::ParaKind::Display { .. });
+            out.push_str(if bullet { &label } else { "\\item[]" });
             out.push_str("\\strut ");
-            out.push_str(&escape_text(line));
+            out.push_str(&paragraph_tex(&chars, p));
         }
         out.push_str("\\end{list}");
         return out;
     }
-    out.push_str("\\strut ");
-    let mut first = true;
-    for line in t.text.split('\n') {
-        if !first {
+    for (i, p) in paras.iter().enumerate() {
+        if i > 0 {
             out.push_str("\\\\\\relax ");
         }
-        first = false;
-        if line.trim().is_empty() {
-            out.push_str("\\mbox{}");
-        } else {
-            out.push_str(&escape_text(line));
-        }
+        out.push_str("\\strut ");
+        out.push_str(&paragraph_tex(&chars, p));
     }
     out
 }
@@ -205,24 +228,6 @@ fn text_node(o: &Object, t: &TextBox) -> String {
         bp(o.rect.y),
         text_body(t)
     )
-}
-
-fn equation_node(o: &Object, e: &Equation) -> String {
-    let mut opts = format!(
-        "anchor=north west,inner sep=0pt,outer sep=0pt,font={}\\sffamily,text={}",
-        font_cmd(e.font_size),
-        color_name(e.color)
-    );
-    if let Some(a) = opacity(e.color) {
-        let _ = write!(opts, ",text opacity={a}");
-    }
-    let body = match math_problem(&e.source) {
-        None => format!("$\\displaystyle {}$", normalize_math(&e.source)),
-        Some(why) => {
-            format!("\\textcolor{{red}}{{[equation error: {}]}}", escape_text(why))
-        }
-    };
-    format!("\\node[{opts}] at ({},{}) {{{body}}};\n", bp(o.rect.x), bp(o.rect.y))
 }
 
 fn image_node(o: &Object, rel: Option<&String>) -> String {
@@ -324,7 +329,6 @@ fn collect_colors(doc: &Document) -> BTreeSet<(u8, u8, u8)> {
         for o in &s.objects {
             match &o.kind {
                 ObjectKind::Text(t) => add(t.color),
-                ObjectKind::Equation(e) => add(e.color),
                 ObjectKind::Image(_) => {}
                 ObjectKind::Shape(sh) => {
                     add(sh.stroke);
@@ -343,7 +347,6 @@ fn slide_body(slide: &Slide, assets: &HashMap<AssetId, String>) -> String {
     for o in &slide.objects {
         out.push_str(&match &o.kind {
             ObjectKind::Text(t) => text_node(o, t),
-            ObjectKind::Equation(e) => equation_node(o, e),
             ObjectKind::Image(i) => image_node(o, assets.get(&i.asset)),
             ObjectKind::Shape(s) => shape_cmd(o, s),
         });
@@ -369,6 +372,9 @@ pub fn generate_tex(doc: &Document, assets: &HashMap<AssetId, String>) -> String
     t.push_str(MATH_PACKAGES);
     t.push_str("\\usepackage{graphicx}\n\\usepackage{tikz}\n\\usetikzlibrary{arrows.meta}\n");
     t.push_str("\\usefonttheme[onlymath]{serif}\n");
+    // Inline math is never split across lines (the editor keeps each
+    // formula on one line too).
+    t.push_str("\\relpenalty=10000\n\\binoppenalty=10000\n");
     t.push_str("\\setbeamertemplate{navigation symbols}{}\n");
     for (r, g, b) in collect_colors(doc) {
         let _ = writeln!(
@@ -575,8 +581,8 @@ mod tests {
         s.objects.push(Object {
             id: ids[1],
             rect: Rect::new(10.0, 60.0, 10.0, 10.0),
-            kind: ObjectKind::Equation(Equation {
-                source: r"\alpha^2 % note".into(),
+            kind: ObjectKind::Text(TextBox {
+                text: r"Energy $\alpha^2 % note$ costs \$5 $$\int f$$ end".into(),
                 ..Default::default()
             }),
         });
@@ -591,8 +597,12 @@ mod tests {
         assert!(tex.starts_with("% Generated by BeamerX"));
         assert!(tex.contains("\\documentclass[aspectratio=169,11pt]{beamer}"));
         assert!(tex.contains("\\title{T \\& A}"));
-        assert!(tex.contains("at (10,20) {\\strut 50\\% off\\\\\\relax \\mbox{}\\\\\\relax \\_x\\_}"));
-        assert!(tex.contains("$\\displaystyle \\alpha^2 % note\n$"));
+        assert!(tex.contains("at (10,20) {\\strut 50\\% off\\\\\\relax \\strut \\mbox{}\\\\\\relax \\strut \\_x\\_}"));
+        // Inline math passes through; text dollars stay escaped; display
+        // math is centred on its own line.
+        assert!(tex.contains(
+            "{\\strut Energy $\\alpha^2 % note\n$ costs \\$5 \\\\\\relax \\strut \\hspace*{\\fill}$\\displaystyle \\int f\n$\\hspace*{\\fill}\\\\\\relax \\strut  end}"
+        ));
         // Missing image becomes a visible placeholder, not a broken \includegraphics.
         assert!(!tex.contains("includegraphics"));
         assert_eq!(tex.matches("\\begin{frame}").count(), 1);

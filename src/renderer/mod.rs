@@ -4,15 +4,13 @@
 //! full-screen presentation, at different scales. Geometry is converted from
 //! slide space (bp) to screen points only here, through [`View`].
 
+pub mod text_layout;
 pub mod textures;
 
 use crate::assets::AssetStore;
-use crate::document::{
-    Color, Equation, ImageRef, Object, ObjectId, ObjectKind, Rect, Shape, ShapeKind, Slide, TextAlign, TextBox, typeset,
-};
+use crate::document::{Color, ImageRef, Object, ObjectId, ObjectKind, Rect, Shape, ShapeKind, Slide, TextBox};
 use crate::export::arrow_head;
-use crate::math::{MathService, MathStatus};
-use egui::text::{LayoutJob, TextFormat};
+use crate::math::MathService;
 use egui::{Color32, FontFamily, FontId, Painter, Pos2, Stroke, StrokeKind, Vec2, pos2, vec2};
 use std::sync::Arc;
 use std::time::Instant;
@@ -122,6 +120,9 @@ pub struct Services<'a> {
     pub textures: &'a mut TextureCache,
     pub math: &'a mut MathService,
     pub now: Instant,
+    /// When set, painted text boxes report their content height (bp), so
+    /// the editor can keep auto-sized boxes in sync with rendered math.
+    pub text_heights: Option<Vec<(ObjectId, f32)>>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -153,8 +154,7 @@ pub fn paint_slide(p: &Painter, view: &View, slide: &Slide, sv: &mut Services, o
 
 pub fn paint_object(p: &Painter, view: &View, o: &Object, sv: &mut Services, opts: PaintOpts) {
     match &o.kind {
-        ObjectKind::Text(t) => paint_text(p, view, &o.rect, t, opts.editor_hints),
-        ObjectKind::Equation(e) => paint_equation(p, view, &o.rect, e, sv, opts.editor_hints),
+        ObjectKind::Text(t) => paint_text(p, view, o, t, sv, opts.editor_hints),
         ObjectKind::Image(i) => paint_image(p, view, &o.rect, i, sv, opts.editor_hints),
         ObjectKind::Shape(s) => paint_shape(p, view, &o.rect, s),
     }
@@ -163,80 +163,30 @@ pub fn paint_object(p: &Painter, view: &View, o: &Object, sv: &mut Services, opt
 /// Lay out a text box at `scale` (screen points per bp). Returns galleys with
 /// their offsets (relative to the box's top-left, in screen points) and the
 /// content height in bp.
+/// Lay out a text box (with math) at `scale` screen points per bp.
 pub fn layout_text(
-    fonts_painter: &Painter,
+    p: &Painter,
+    sv: &mut Services,
     t: &TextBox,
     width_bp: f32,
     scale: f32,
-) -> (Vec<(Arc<egui::Galley>, Vec2)>, f32) {
-    let size = t.font_size * scale;
-    let line = size * typeset::LINE_SPREAD;
-    let family = text_family(t.bold, t.italic);
-    let fmt = TextFormat {
-        font_id: FontId::new(size, family.clone()),
-        color: c32(t.color),
-        line_height: Some(line),
-        ..Default::default()
-    };
-    let width = (width_bp * scale).max(1.0);
-    let halign = match t.align {
-        TextAlign::Left => egui::Align::LEFT,
-        TextAlign::Center => egui::Align::Center,
-        TextAlign::Right => egui::Align::RIGHT,
-    };
-    let x_for = |w: f32| match t.align {
-        TextAlign::Left => 0.0,
-        TextAlign::Center => w * 0.5,
-        TextAlign::Right => w,
-    };
-    let first_baseline = size * typeset::FIRST_BASELINE;
-    let mut out = Vec::new();
-    let mut y = 0.0f32;
-    let paragraphs: Vec<&str> = if t.bullets {
-        t.text.split('\n').collect()
-    } else {
-        vec![t.text.as_str()]
-    };
-    let indent = if t.bullets { size * typeset::BULLET_INDENT } else { 0.0 };
-    for para in paragraphs {
-        let mut job = LayoutJob::default();
-        job.wrap.max_width = (width - indent).max(1.0);
-        job.halign = halign;
-        job.append(para, 0.0, fmt.clone());
-        let g = fonts_painter.layout_job(job);
-        // Align the first baseline with TeX's \strut convention.
-        let b0 = g
-            .rows
-            .first()
-            .and_then(|r| r.row.glyphs.first().map(|gl| r.pos.y + gl.pos.y));
-        let b0 = b0.unwrap_or(line * 0.75);
-        let dy = y + first_baseline - b0;
-        if t.bullets && !para.trim().is_empty() {
-            let mut bj = LayoutJob::default();
-            bj.append("•", 0.0, fmt.clone());
-            let bg = fonts_painter.layout_job(bj);
-            let bb = bg
-                .rows
-                .first()
-                .and_then(|r| r.row.glyphs.first().map(|gl| r.pos.y + gl.pos.y))
-                .unwrap_or(b0);
-            out.push((bg, vec2(0.0, y + first_baseline - bb)));
-        }
-        let rows = g.rows.len().max(1) as f32;
-        out.push((g, vec2(indent + x_for(width - indent), dy)));
-        y += rows * line;
-    }
-    (out, y / scale)
+    caret: Option<usize>,
+) -> text_layout::TextLayout {
+    text_layout::layout(
+        p,
+        sv.math,
+        sv.now,
+        &text_layout::LayoutInput {
+            style: t,
+            width_bp,
+            scale,
+            caret,
+        },
+    )
 }
 
-/// Content height (bp) of a text box: number of laid-out lines × line spread.
-pub fn text_height_bp(p: &Painter, t: &TextBox, width_bp: f32) -> f32 {
-    // Lay out at a fixed, moderately large scale to make wrapping
-    // decisions zoom-independent.
-    layout_text(p, t, width_bp, 2.0).1
-}
-
-pub fn paint_text(p: &Painter, view: &View, r: &Rect, t: &TextBox, hints: bool) {
+pub fn paint_text(p: &Painter, view: &View, o: &Object, t: &TextBox, sv: &mut Services, hints: bool) {
+    let r = &o.rect;
     let origin = view.pt(r.x, r.y);
     if t.text.is_empty() {
         if hints {
@@ -244,80 +194,26 @@ pub fn paint_text(p: &Painter, view: &View, r: &Rect, t: &TextBox, hints: bool) 
             p.text(
                 origin + vec2(0.0, size * 0.1),
                 egui::Align2::LEFT_TOP,
-                "Click to type",
+                "Click to add text",
                 FontId::new(size, text_family(false, true)),
                 Color32::from_gray(150),
             );
         }
         return;
     }
-    let (galleys, _) = layout_text(p, t, r.w, view.scale);
-    for (g, off) in galleys {
-        p.galley(origin + off, g, c32(t.color));
+    let lay = layout_text(p, sv, t, r.w, view.scale, None);
+    if let Some(h) = sv.text_heights.as_mut() {
+        h.push((o.id, lay.height / view.scale));
     }
-}
-
-fn paint_equation(p: &Painter, view: &View, r: &Rect, e: &Equation, sv: &mut Services, hints: bool) {
-    let ppp = p.pixels_per_point();
-    let status = sv.math.request(&e.source, e.font_size, sv.now);
-    match status {
-        MathStatus::Ready(render) => {
-            let size = vec2(render.size_bp.0, render.size_bp.1) * view.scale;
-            let dest = egui::Rect::from_min_size(view.pt(r.x, r.y), size);
-            if let Some(tex) = sv.textures.math(&render, view.scale * ppp) {
-                p.image(
-                    tex,
-                    dest,
-                    egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                    c32(e.color),
-                );
-            } else if hints {
-                p.rect_filled(dest, 2.0, Color32::from_gray(235));
-            }
-        }
-        MathStatus::Pending => {
-            let dest = view.rect(r);
-            if hints {
-                p.rect_filled(dest, 2.0, Color32::from_rgba_unmultiplied(31, 95, 168, 18));
-                let size = (e.font_size * view.scale * 0.6).max(6.0);
-                p.text(
-                    dest.left_center(),
-                    egui::Align2::LEFT_CENTER,
-                    truncate(&e.source, 60),
-                    FontId::monospace(size),
-                    Color32::from_gray(110),
-                );
-            }
-        }
-        MathStatus::Failed(_) => {
-            let dest = view.rect(r).expand(1.0);
-            if hints {
-                p.rect_stroke(
-                    dest,
-                    2.0,
-                    Stroke::new(1.5, Color32::from_rgb(200, 40, 40)),
-                    StrokeKind::Outside,
-                );
-                let size = (e.font_size * view.scale * 0.6).max(6.0);
-                p.text(
-                    dest.left_center() + vec2(2.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    format!("LaTeX error: {}", truncate(&e.source, 50)),
-                    FontId::monospace(size),
-                    Color32::from_rgb(200, 40, 40),
-                );
-            }
-        }
-    }
-}
-
-fn truncate(s: &str, n: usize) -> String {
-    let one_line: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.chars().count() > n {
-        one_line.chars().take(n).chain(std::iter::once('…')).collect()
-    } else {
-        one_line
-    }
+    text_layout::paint(
+        p,
+        origin,
+        &lay,
+        t.color,
+        sv.textures,
+        view.scale * p.pixels_per_point(),
+        view.scale,
+    );
 }
 
 fn paint_image(p: &Painter, view: &View, r: &Rect, i: &ImageRef, sv: &mut Services, hints: bool) {

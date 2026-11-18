@@ -8,10 +8,11 @@
 pub mod canvas;
 pub mod inspector;
 pub mod slides_panel;
+pub mod text_edit;
 
 use crate::commands::{Command, History, MergeKey};
 use crate::document::{
-    Document, Object, ObjectId, ObjectKind, Rect, SLIDE_H, SLIDE_W, Shape, ShapeKind, Slide, SlideId,
+    Document, Object, ObjectId, ObjectKind, Rect, SLIDE_H, SLIDE_W, Shape, ShapeKind, Slide, SlideId, TextBox,
 };
 use std::path::PathBuf;
 
@@ -19,7 +20,6 @@ use std::path::PathBuf;
 pub enum Tool {
     Select,
     Text,
-    Equation,
     Shape(ShapeKind),
 }
 
@@ -60,8 +60,6 @@ pub struct Editor {
     pub zoom: Zoom,
     /// Text object being edited in place on the canvas.
     pub editing_text: Option<ObjectId>,
-    /// Ask the inspector to focus the equation source field.
-    pub focus_source: bool,
     pub clipboard: Vec<Object>,
     paste_count: u32,
     pub path: Option<PathBuf>,
@@ -80,7 +78,6 @@ impl Editor {
             tool: Tool::Select,
             zoom: Zoom::Fit,
             editing_text: None,
-            focus_source: false,
             clipboard: Vec::new(),
             paste_count: 0,
             path,
@@ -233,6 +230,81 @@ impl Editor {
             },
             merge,
         );
+    }
+
+    /// Style of the first selected text box (for the ribbon's controls).
+    pub fn selected_text_style(&self) -> Option<TextBox> {
+        let s = self.slide();
+        self.selection
+            .iter()
+            .filter_map(|id| s.object(*id))
+            .find_map(|o| match &o.kind {
+                ObjectKind::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+    }
+
+    /// Change every selected text box with `f` as one undo step.
+    pub fn update_selected_text(&mut self, field: u8, f: impl Fn(&mut TextBox)) {
+        self.update_selected(field, |k| {
+            if let ObjectKind::Text(t) = k {
+                f(t);
+            }
+        });
+    }
+
+    /// Change every selected shape with `f` as one undo step.
+    pub fn update_selected_shapes(&mut self, field: u8, f: impl Fn(&mut Shape)) {
+        self.update_selected(field, |k| {
+            if let ObjectKind::Shape(sh) = k {
+                f(sh);
+            }
+        });
+    }
+
+    fn update_selected(&mut self, field: u8, f: impl Fn(&mut ObjectKind)) {
+        let slide = self.slide_id();
+        let s = self.slide();
+        let cmds: Vec<Command> = self
+            .selection
+            .iter()
+            .filter_map(|id| s.object(*id))
+            .filter_map(|o| {
+                let mut k = o.kind.clone();
+                f(&mut k);
+                (k != o.kind).then(|| Command::SetObject {
+                    slide,
+                    id: o.id,
+                    before: (o.kind.clone(), o.rect),
+                    after: (k, o.rect),
+                })
+            })
+            .collect();
+        let key = self.selection.first().map(|id| MergeKey::Object(*id, 100 + field));
+        match cmds.len() {
+            0 => {}
+            1 => self.exec_merging(cmds.into_iter().next().expect("one"), key),
+            _ => self.exec(Command::Batch(cmds)),
+        }
+    }
+
+    /// Use the current slide's background on every slide.
+    pub fn apply_background_to_all(&mut self) {
+        let bg = self.slide().background;
+        let cmds: Vec<Command> = self
+            .doc
+            .slides
+            .iter()
+            .filter(|s| s.background != bg)
+            .map(|s| Command::SetBackground {
+                slide: s.id,
+                before: s.background,
+                after: bg,
+            })
+            .collect();
+        if !cmds.is_empty() {
+            self.exec(Command::Batch(cmds));
+        }
     }
 
     fn selected_items(&self) -> Vec<(usize, Object)> {
@@ -531,7 +603,6 @@ pub fn new_object_kind(tool: Tool) -> Option<ObjectKind> {
     Some(match tool {
         Tool::Select => return None,
         Tool::Text => ObjectKind::Text(Default::default()),
-        Tool::Equation => ObjectKind::Equation(Default::default()),
         Tool::Shape(k) => ObjectKind::Shape(Shape::new(k)),
     })
 }
@@ -644,6 +715,38 @@ mod tests {
         assert_eq!(e.doc.slides.len(), 1);
         assert!(e.doc.slides[0].objects.is_empty());
         assert!(!e.is_dirty());
+    }
+
+    #[test]
+    fn formatting_applies_to_all_selected_text_as_one_step() {
+        let mut e = editor_with(3);
+        e.select_all();
+        e.update_selected_text(1, |t| t.bold = true);
+        assert!(
+            e.slide()
+                .objects
+                .iter()
+                .all(|o| matches!(&o.kind, ObjectKind::Text(t) if t.bold))
+        );
+        assert_eq!(e.selected_text_style().map(|t| t.bold), Some(true));
+        e.undo();
+        assert!(
+            e.slide()
+                .objects
+                .iter()
+                .all(|o| matches!(&o.kind, ObjectKind::Text(t) if !t.bold))
+        );
+        e.new_slide();
+        e.go_to_slide(0);
+        let before = e.slide().background;
+        let sid = e.slide_id();
+        e.exec(Command::SetBackground {
+            slide: sid,
+            before,
+            after: Color::BLACK,
+        });
+        e.apply_background_to_all();
+        assert!(e.doc.slides.iter().all(|s| s.background == Color::BLACK));
     }
 
     #[test]

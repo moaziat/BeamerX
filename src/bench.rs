@@ -585,7 +585,7 @@ fn add_asset(assets: &mut AssetStore, bytes: &[u8], name: &str) -> AssetMeta {
 }
 
 /// Deck B: 20 slides × 100 editable objects (title, 39 text boxes, 20
-/// equations, 30 shapes, 10 images).
+/// text boxes with inline math, 30 shapes, 10 images).
 pub fn deck_b(assets: &mut AssetStore) -> Document {
     let images: Vec<AssetMeta> = (0..10)
         .map(|i| add_asset(assets, &png_pattern(256, 192, i), &format!("plot-{i}.png")))
@@ -626,15 +626,16 @@ pub fn deck_b(assets: &mut AssetStore) -> Document {
             );
         }
         for i in 0..20 {
+            // Text with inline LaTeX math.
             let src = EQUATIONS[(i + s) % EQUATIONS.len()];
             let (c, r) = (i % 4, i / 4);
             push(
                 &mut doc,
-                Rect::new(10.0 + c as f32 * 110.0, 140.0 + r as f32 * 22.0, 60.0, 14.0),
-                ObjectKind::Equation(Equation {
-                    source: src.into(),
+                Rect::new(10.0 + c as f32 * 110.0, 140.0 + r as f32 * 22.0, 105.0, 14.0),
+                ObjectKind::Text(TextBox {
+                    text: format!("Eq. {i}: ${src}$"),
                     font_size: 9.0 + (i % 3) as f32,
-                    color: Color::BLACK,
+                    ..Default::default()
                 }),
             );
         }

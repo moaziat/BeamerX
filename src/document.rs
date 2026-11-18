@@ -238,8 +238,10 @@ pub enum TextAlign {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TextBox {
-    /// Plain Unicode text. Line breaks are hard breaks; long lines wrap at
-    /// the box width. Exported with LaTeX special characters escaped.
+    /// Unicode text with LaTeX math: `$…$` inline, `$$…$$` display (see
+    /// [`crate::rich`]). Line breaks are hard breaks; long lines wrap at the
+    /// box width. Plain text is exported with LaTeX specials escaped; math is
+    /// passed to LaTeX as written.
     pub text: String,
     /// Font size in bp.
     pub font_size: f32,
@@ -265,26 +267,6 @@ impl Default for TextBox {
             italic: false,
             align: TextAlign::Left,
             bullets: false,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Equation {
-    /// LaTeX math-mode source, typeset as `$\displaystyle …$`.
-    pub source: String,
-    /// Font size in bp. The object's on-slide size follows from typesetting
-    /// `source` at this size; the stored rect's `w`/`h` cache that result.
-    pub font_size: f32,
-    pub color: Color,
-}
-
-impl Default for Equation {
-    fn default() -> Self {
-        Self {
-            source: r"E = mc^2".into(),
-            font_size: 20.0,
-            color: Color::BLACK,
         }
     }
 }
@@ -379,7 +361,6 @@ impl Shape {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ObjectKind {
     Text(TextBox),
-    Equation(Equation),
     Image(ImageRef),
     Shape(Shape),
 }
@@ -388,7 +369,6 @@ impl ObjectKind {
     pub fn label(&self) -> &'static str {
         match self {
             ObjectKind::Text(_) => "Text",
-            ObjectKind::Equation(_) => "Equation",
             ObjectKind::Image(_) => "Image",
             ObjectKind::Shape(s) => match s.kind {
                 ShapeKind::Rectangle => "Rectangle",
@@ -401,7 +381,7 @@ impl ObjectKind {
 
     /// Objects whose aspect ratio is preserved when resized from a corner.
     pub fn keeps_aspect(&self) -> bool {
-        matches!(self, ObjectKind::Image(_) | ObjectKind::Equation(_))
+        matches!(self, ObjectKind::Image(_))
     }
 
     /// Rough heap footprint, used for bounding undo history.
@@ -409,7 +389,6 @@ impl ObjectKind {
         std::mem::size_of::<Self>()
             + match self {
                 ObjectKind::Text(t) => t.text.len(),
-                ObjectKind::Equation(e) => e.source.len(),
                 ObjectKind::Image(i) => i.asset.0.len(),
                 ObjectKind::Shape(_) => 0,
             }
@@ -595,7 +574,6 @@ impl Document {
                 o.rect = o.rect.sanitized();
                 match &mut o.kind {
                     ObjectKind::Text(t) => t.font_size = sanitize_font(t.font_size),
-                    ObjectKind::Equation(e) => e.font_size = sanitize_font(e.font_size),
                     ObjectKind::Image(i) => {
                         if !i.asset.is_valid() {
                             return Err(format!("invalid asset id {:?}", i.asset.0));

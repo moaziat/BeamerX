@@ -6,7 +6,8 @@
 //! * [`editor`]      – editor state, canvas interaction, inspector, slide list
 //! * [`renderer`]    – painting slides; bounded texture cache
 //! * [`assets`]      – content-addressed image store, import guards, decoding
-//! * [`math`]        – debounced, batched, cached LaTeX equation previews
+//! * [`rich`]        – `$…$` / `$$…$$` math inside text (shared by editor and export)
+//! * [`math`]        – debounced, batched, cached LaTeX math previews
 //! * [`latex`]       – external LaTeX toolchain discovery and invocation
 //! * [`export`]      – Beamer `.tex` generation, folder and PDF export
 //! * [`persistence`] – `.beamerx` package save/load with atomic writes
@@ -29,3 +30,4 @@ pub mod perf;
 pub mod persistence;
 pub mod platform;
 pub mod renderer;
+pub mod rich;

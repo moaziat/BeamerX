@@ -1,22 +1,23 @@
 //! The editing canvas: painting, hit-testing, selection, move/resize with
 //! snapping, creation tools, zoom/pan and in-place text editing.
 //!
-//! Drags mutate only the dragged objects' rectangles for live preview and
-//! record a single undoable command when the gesture ends.
+//! Interaction follows PowerPoint: a click on a text box puts the caret
+//! there; dragging a box (or the outline of the box being edited) moves it;
+//! handles resize. Drags mutate only the dragged objects for live preview
+//! and record a single undoable command when the gesture ends.
 
+use super::text_edit::{self, Caret, Outcome, RichEdit};
 use super::{Editor, Tool, Zoom, new_object_kind};
-use crate::commands::{Command, MergeKey};
-use crate::document::{
-    MAX_FONT_SIZE, MIN_EXTENT, MIN_FONT_SIZE, ObjectId, ObjectKind, Rect, SLIDE_H, SLIDE_W, Shape, TextAlign, TextBox,
-    typeset,
-};
-use crate::renderer::{self, PaintOpts, Services, View, c32, text_family};
-use egui::text::{LayoutJob, TextFormat};
-use egui::{Color32, CursorIcon, FontId, Key, Pos2, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
+use crate::commands::Command;
+use crate::document::{MIN_EXTENT, ObjectId, ObjectKind, Rect, SLIDE_H, SLIDE_W, Shape, typeset};
+use crate::renderer::{self, PaintOpts, Services, View};
+use egui::{Color32, CursorIcon, Key, Pos2, Sense, Stroke, StrokeKind, Ui, Vec2, vec2};
 
 const HANDLE: f32 = 7.0;
 const HIT_TOL: f32 = 5.0;
 const SNAP_PX: f32 = 6.0;
+/// Width of the band around an edited text box that drags the box.
+const EDIT_BAND: f32 = 9.0;
 const ACCENT: Color32 = Color32::from_rgb(10, 132, 255);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,20 +57,30 @@ enum Gesture {
     },
 }
 
-#[derive(Default)]
 pub struct CanvasState {
     gesture: Option<Gesture>,
     guides: Vec<(bool, f32)>,
-    edit_buffer: String,
-    edit_for: Option<ObjectId>,
-    /// Frames since in-place editing started.
-    edit_age: u32,
-    /// Where to put the caret when in-place editing starts.
-    caret: Caret,
+    /// Caret/selection of the text box being edited.
+    pub rich: Option<RichEdit>,
+    /// Where the caret goes when the next edit starts.
+    edit_start: Caret,
     /// Last view used, for drop-position mapping and bench drivers.
     pub last_view: Option<View>,
     /// Pointer position over the slide (slide space), if hovering.
     pub hover_slide_pos: Option<(f32, f32)>,
+}
+
+impl Default for CanvasState {
+    fn default() -> Self {
+        Self {
+            gesture: None,
+            guides: Vec::new(),
+            rich: None,
+            edit_start: Caret::End,
+            last_view: None,
+            hover_slide_pos: None,
+        }
+    }
 }
 
 impl CanvasState {
@@ -78,20 +89,29 @@ impl CanvasState {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-enum Caret {
-    #[default]
-    End,
-    /// Screen position of the click that started editing.
-    At(Pos2),
-}
-
 /// Start in-place editing of a text object.
-fn begin_text_edit(ed: &mut Editor, st: &mut CanvasState, id: ObjectId, caret: Caret) {
+pub fn begin_text_edit(ed: &mut Editor, st: &mut CanvasState, id: ObjectId, caret: Caret) {
     ed.selection = vec![id];
     ed.editing_text = Some(id);
-    st.edit_for = None;
-    st.caret = caret;
+    ed.tool = Tool::Select;
+    st.rich = None;
+    st.edit_start = caret;
+}
+
+/// Leave text editing; boxes left empty are removed (as in PowerPoint).
+pub fn finish_text_edit(ed: &mut Editor, st: &mut CanvasState) {
+    if let Some(id) = ed.editing_text.take() {
+        ed.history.seal();
+        if let Some(ObjectKind::Text(t)) = ed.object(id).map(|o| &o.kind)
+            && t.text.trim().is_empty()
+        {
+            let keep = std::mem::take(&mut ed.selection);
+            ed.selection = vec![id];
+            ed.delete_selection();
+            ed.selection = keep.into_iter().filter(|x| *x != id).collect();
+        }
+    }
+    st.rich = None;
 }
 
 /// Requests from the canvas to the application.
@@ -125,6 +145,10 @@ pub fn hit_test(ed: &Editor, p: (f32, f32), tol: f32) -> Option<ObjectId> {
     })
 }
 
+fn is_text(ed: &Editor, id: ObjectId) -> bool {
+    matches!(ed.object(id).map(|o| &o.kind), Some(ObjectKind::Text(_)))
+}
+
 fn handles_for(ed: &Editor, view: &View) -> Vec<(Handle, Pos2)> {
     if ed.selection.len() != 1 {
         return Vec::new();
@@ -141,7 +165,8 @@ fn handles_for(ed: &Editor, view: &View) -> Vec<(Handle, Pos2)> {
             ]
         }
         ObjectKind::Text(_) => {
-            let r = view.rect(&o.rect);
+            // Text height follows its content; only the width is resizable.
+            let r = view.rect(&o.rect).expand(3.0);
             vec![
                 (Handle::Box(-1, 0), r.left_center()),
                 (Handle::Box(1, 0), r.right_center()),
@@ -178,8 +203,9 @@ fn cursor_for(h: Handle) -> CursorIcon {
     }
 }
 
-/// New rect (and kind, for equations) for a box resize.
-fn resize_box(rect: Rect, kind: &ObjectKind, h: (i8, i8), d: (f32, f32), aspect: bool) -> (Rect, ObjectKind) {
+/// New rect for a box resize. Corner drags keep the aspect ratio when
+/// `aspect` is set.
+fn resize_box(rect: Rect, h: (i8, i8), d: (f32, f32), aspect: bool) -> Rect {
     let (mut l, mut t, mut r, mut b) = (rect.x, rect.y, rect.right(), rect.bottom());
     match h.0 {
         -1 => l = (l + d.0).min(r - MIN_EXTENT),
@@ -191,23 +217,16 @@ fn resize_box(rect: Rect, kind: &ObjectKind, h: (i8, i8), d: (f32, f32), aspect:
         1 => b = (b + d.1).max(t + MIN_EXTENT),
         _ => {}
     }
-    let mut out = Rect::new(l, t, r - l, b - t);
-    let mut kind = kind.clone();
-    let corner = h.0 != 0 && h.1 != 0;
-    if aspect && corner && rect.w > 0.0 && rect.h > 0.0 {
-        let mut s = (out.w / rect.w).max(out.h / rect.h);
-        if let ObjectKind::Equation(e) = &mut kind {
-            let f = (e.font_size * s).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
-            s = f / e.font_size;
-            e.font_size = (f * 10.0).round() / 10.0;
-        }
+    let out = Rect::new(l, t, r - l, b - t);
+    if aspect && h.0 != 0 && h.1 != 0 && rect.w > 0.0 && rect.h > 0.0 {
+        let s = (out.w / rect.w).max(out.h / rect.h);
         let (w, hh) = (rect.w * s, rect.h * s);
         // Anchor at the opposite corner.
         let x = if h.0 < 0 { rect.right() - w } else { rect.x };
         let y = if h.1 < 0 { rect.bottom() - hh } else { rect.y };
-        out = Rect::new(x, y, w, hh);
+        return Rect::new(x, y, w, hh);
     }
-    (out, kind)
+    out
 }
 
 /// Snap the moving bounds to slide edges/centre and other objects.
@@ -243,56 +262,30 @@ fn snap(ed: &Editor, moving: &[ObjectId], bounds: Rect, tol: f32) -> (f32, f32, 
     (dx, dy, guides)
 }
 
-/// Text layout job matching the renderer (for the in-place editor).
-fn text_job(text: &str, t: &TextBox, scale: f32, wrap: f32) -> LayoutJob {
-    let size = t.font_size * scale;
-    let mut job = LayoutJob::default();
-    job.wrap.max_width = wrap;
-    job.halign = match t.align {
-        TextAlign::Left => egui::Align::LEFT,
-        TextAlign::Center => egui::Align::Center,
-        TextAlign::Right => egui::Align::RIGHT,
-    };
-    job.append(
-        text,
-        0.0,
-        TextFormat {
-            font_id: FontId::new(size, text_family(t.bold, t.italic)),
-            color: c32(t.color),
-            line_height: Some(size * typeset::LINE_SPREAD),
-            ..Default::default()
-        },
-    );
-    job
-}
-
 /// Re-measure a text object's height after its content or width changed.
-pub fn refit_text(p: &egui::Painter, kind: &ObjectKind, mut rect: Rect) -> Rect {
+pub fn refit_text(p: &egui::Painter, sv: &mut Services, kind: &ObjectKind, mut rect: Rect) -> Rect {
     if let ObjectKind::Text(t) = kind {
-        rect.h = renderer::text_height_bp(p, t, rect.w).max(t.font_size * typeset::LINE_SPREAD);
+        let lay = renderer::layout_text(p, sv, t, rect.w, 2.0, None);
+        rect.h = (lay.height / 2.0).max(t.font_size * typeset::LINE_SPREAD);
     }
     rect
 }
 
-/// Keep equation rects equal to their typeset size (derived data; not an
-/// undoable edit).
-pub fn sync_equation_sizes(ed: &mut Editor, sv: &Services) {
+/// Keep text box heights equal to their laid-out content (derived data that
+/// changes when math finishes typesetting; not an undoable edit).
+fn apply_text_heights(ed: &mut Editor, heights: &[(ObjectId, f32)], skip: Option<ObjectId>) {
     let i = ed.current;
-    let updates: Vec<(ObjectId, (f32, f32))> = ed.doc.slides[i]
-        .objects
-        .iter()
-        .filter_map(|o| match &o.kind {
-            ObjectKind::Equation(e) => sv.math.peek(&e.source, e.font_size).and_then(|r| {
-                let (w, h) = r.size_bp;
-                ((o.rect.w - w).abs() > 0.01 || (o.rect.h - h).abs() > 0.01).then_some((o.id, (w, h)))
-            }),
-            _ => None,
-        })
-        .collect();
-    for (id, (w, h)) in updates {
-        if let Some(o) = ed.doc.slides[i].object_mut(id) {
-            o.rect.w = w;
-            o.rect.h = h;
+    for &(id, h) in heights {
+        if Some(id) == skip {
+            continue;
+        }
+        if let Some(o) = ed.doc.slides[i].object_mut(id)
+            && let ObjectKind::Text(t) = &o.kind
+        {
+            let h = h.max(t.font_size * typeset::LINE_SPREAD);
+            if (o.rect.h - h).abs() > 0.5 {
+                o.rect.h = h;
+            }
         }
     }
 }
@@ -321,7 +314,7 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
             scale,
         },
     };
-    if resp.hovered() {
+    if resp.hovered() || ui.rect_contains_pointer(area) {
         let (zoom, scroll, pointer) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta, i.pointer.hover_pos()));
         if (zoom - 1.0).abs() > 1e-4 {
             let p = pointer.unwrap_or(area.center());
@@ -363,6 +356,7 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
         Color32::from_black_alpha(40),
     );
     let editing = ed.editing_text;
+    sv.text_heights = Some(Vec::new());
     renderer::paint_slide(
         &painter,
         &view,
@@ -373,13 +367,17 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
             editor_hints: true,
         },
     );
+    let heights = sv.text_heights.take().unwrap_or_default();
+    if st.gesture.is_none() {
+        apply_text_heights(ed, &heights, editing);
+    }
 
     // ---- keyboard ----------------------------------------------------------
     let text_focus = ui.ctx().text_edit_focused();
     // A single selected text box captures typing: letters go into the box on
-    // the slide instead of triggering tool shortcuts.
+    // the slide instead of triggering tool shortcuts (as in PowerPoint).
     let selected_text = match ed.selection.as_slice() {
-        [id] if matches!(ed.object(*id).map(|o| &o.kind), Some(ObjectKind::Text(_))) => Some(*id),
+        [id] if is_text(ed, *id) => Some(*id),
         _ => None,
     };
     if !text_focus
@@ -387,18 +385,10 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
         && st.gesture.is_none()
         && let Some(id) = selected_text
     {
-        let typed: String = ui.input(|i| {
-            i.events
-                .iter()
-                .filter_map(|e| match e {
-                    egui::Event::Text(t) => Some(t.as_str()),
-                    _ => None,
-                })
-                .collect()
-        });
-        if !typed.is_empty() {
-            // The in-place editor is created and focused later this frame,
-            // so it receives these same keystrokes itself.
+        let typed = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_))));
+        if typed {
+            // The editor is created and focused later this frame and
+            // receives these same keystrokes itself.
             begin_text_edit(ed, st, id, Caret::End);
         }
     }
@@ -415,7 +405,6 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
                 Key::Enter,
                 Key::V,
                 Key::T,
-                Key::E,
                 Key::R,
                 Key::O,
                 Key::L,
@@ -443,14 +432,13 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
                         ed.selection.clear();
                     }
                 }
-                Key::Enter if ed.selection.len() == 1 => match ed.object(ed.selection[0]).map(|o| &o.kind) {
-                    Some(ObjectKind::Text(_)) => begin_text_edit(ed, st, ed.selection[0], Caret::End),
-                    Some(ObjectKind::Equation(_)) => ed.focus_source = true,
-                    _ => {}
-                },
+                Key::Enter => {
+                    if let Some(id) = selected_text {
+                        begin_text_edit(ed, st, id, Caret::End);
+                    }
+                }
                 Key::V if plain => ed.set_tool(Tool::Select),
                 Key::T if plain => ed.set_tool(Tool::Text),
-                Key::E if plain => ed.set_tool(Tool::Equation),
                 Key::R if plain => ed.set_tool(Tool::Shape(crate::document::ShapeKind::Rectangle)),
                 Key::O if plain => ed.set_tool(Tool::Shape(crate::document::ShapeKind::Ellipse)),
                 Key::L if plain => ed.set_tool(Tool::Shape(crate::document::ShapeKind::Line)),
@@ -464,15 +452,31 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
     // ---- pointer gestures -------------------------------------------------
     let handles = handles_for(ed, &view);
     let mods = ui.input(|i| i.modifiers);
+    let editing = ed.editing_text;
+    // Screen rect of the box being edited, including its drag band.
+    let edit_band = editing
+        .and_then(|id| ed.object(id))
+        .map(|o| view.rect(&o.rect).expand(EDIT_BAND));
     if let Some(p) = pointer.filter(|p| area.contains(*p))
         && st.gesture.is_none()
     {
         if ed.tool != Tool::Select {
-            ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+            ui.ctx().set_cursor_icon(if ed.tool == Tool::Text {
+                CursorIcon::Text
+            } else {
+                CursorIcon::Crosshair
+            });
         } else if let Some((h, _)) = handles.iter().find(|(_, hp)| hp.distance(p) <= HANDLE) {
             ui.ctx().set_cursor_icon(cursor_for(*h));
-        } else if hit_test(ed, view.to_slide(p), tol).is_some() {
+        } else if edit_band.is_some_and(|b| b.contains(p)) {
             ui.ctx().set_cursor_icon(CursorIcon::Move);
+        } else if let Some(id) = hit_test(ed, view.to_slide(p), tol) {
+            // Text boxes take a caret on click; everything moves on drag.
+            ui.ctx().set_cursor_icon(if is_text(ed, id) {
+                CursorIcon::Text
+            } else {
+                CursorIcon::Move
+            });
         }
     }
 
@@ -481,7 +485,9 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
     {
         let sp = view.to_slide(p);
         let space = ui.input(|i| i.key_down(Key::Space));
-        if editing.is_some() {
+        let handle = handles.iter().find(|(_, hp)| hp.distance(p) <= HANDLE).map(|(h, _)| *h);
+        let on_edit_band = edit_band.is_some_and(|b| b.contains(p));
+        if editing.is_some() && handle.is_none() && !on_edit_band {
             finish_text_edit(ed, st);
         }
         st.gesture = if space || resp.dragged_by(egui::PointerButton::Middle) {
@@ -492,14 +498,22 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
                 start: sp,
                 current: sp,
             })
-        } else if let Some((h, _)) = handles.iter().find(|(_, hp)| hp.distance(p) <= HANDLE) {
+        } else if let Some(h) = handle {
             let o = ed.object(ed.selection[0]).cloned();
             o.map(|o| Gesture::Resize {
                 id: o.id,
-                handle: *h,
+                handle: h,
                 start: sp,
                 rect: o.rect,
                 kind: o.kind,
+            })
+        } else if let (true, Some(id)) = (on_edit_band, editing) {
+            // Dragging the outline of the box being edited moves it.
+            let r = ed.object(id).map(|o| o.rect).unwrap_or_default();
+            Some(Gesture::Move {
+                start: sp,
+                originals: vec![(id, r)],
+                moved: false,
             })
         } else if let Some(id) = hit_test(ed, sp, tol) {
             if !ed.selection.contains(&id) {
@@ -568,9 +582,7 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
                 moved,
             }) => {
                 let (mut dx, mut dy) = (sp.0 - start.0, sp.1 - start.1);
-                if !*moved && (dx.abs() + dy.abs()) * view.scale < 2.0 {
-                    // Ignore jitter before the drag really starts.
-                } else {
+                if *moved || (dx.abs() + dy.abs()) * view.scale >= 2.0 {
                     *moved = true;
                     if mods.shift {
                         // Constrain to the dominant axis.
@@ -601,35 +613,37 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
             }) => {
                 let d = (sp.0 - start.0, sp.1 - start.1);
                 let (id, handle, rect0, kind0) = (*id, *handle, *rect, kind.clone());
-                let painter2 = painter.clone();
-                if let Some(o) = ed.object_mut_for_preview(id) {
-                    match (handle, &mut o.kind) {
-                        (Handle::End(end), ObjectKind::Shape(s)) => {
-                            let ObjectKind::Shape(s0) = &kind0 else { unreachable!() };
-                            let (mut a, mut b) = s0.endpoints(&rect0);
-                            let target = if end { &mut b } else { &mut a };
-                            *target = (target.0 + d.0, target.1 + d.1);
-                            if mods.shift {
-                                // Snap to horizontal / vertical / 45°.
-                                let other = if end { a } else { b };
-                                let mut t = if end { b } else { a };
-                                let (vx, vy) = (t.0 - other.0, t.1 - other.1);
-                                let ang = vy.atan2(vx);
-                                let q = (ang / std::f32::consts::FRAC_PI_4).round() * std::f32::consts::FRAC_PI_4;
-                                let len = (vx * vx + vy * vy).sqrt();
-                                t = (other.0 + len * q.cos(), other.1 + len * q.sin());
-                                if end { b = t } else { a = t }
-                            }
-                            o.rect = s.set_endpoints(a, b);
+                let new_rect = match (handle, &kind0) {
+                    (Handle::End(end), ObjectKind::Shape(s0)) => {
+                        let (mut a, mut b) = s0.endpoints(&rect0);
+                        let target = if end { &mut b } else { &mut a };
+                        *target = (target.0 + d.0, target.1 + d.1);
+                        if mods.shift {
+                            // Snap to horizontal / vertical / 45°.
+                            let other = if end { a } else { b };
+                            let t = if end { b } else { a };
+                            let (vx, vy) = (t.0 - other.0, t.1 - other.1);
+                            let q = (vy.atan2(vx) / std::f32::consts::FRAC_PI_4).round() * std::f32::consts::FRAC_PI_4;
+                            let len = (vx * vx + vy * vy).sqrt();
+                            let t = (other.0 + len * q.cos(), other.1 + len * q.sin());
+                            if end { b = t } else { a = t }
                         }
-                        (Handle::Box(hx, hy), _) => {
-                            let aspect = kind0.keeps_aspect() ^ mods.shift;
-                            let (r, k) = resize_box(rect0, &kind0, (hx, hy), d, aspect);
-                            o.kind = k;
-                            o.rect = refit_text(&painter2, &o.kind, r);
-                        }
-                        _ => {}
+                        let mut s = s0.clone();
+                        let r = s.set_endpoints(a, b);
+                        Some((r, ObjectKind::Shape(s)))
                     }
+                    (Handle::Box(hx, hy), _) => {
+                        let aspect = kind0.keeps_aspect() ^ mods.shift;
+                        let r = resize_box(rect0, (hx, hy), d, aspect);
+                        Some((refit_text(&painter, sv, &kind0, r), kind0.clone()))
+                    }
+                    _ => None,
+                };
+                if let Some((r, k)) = new_rect
+                    && let Some(o) = ed.object_mut_for_preview(id)
+                {
+                    o.rect = r;
+                    o.kind = k;
                 }
             }
             None => {}
@@ -668,29 +682,30 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
                 }
             }
             Some(Gesture::Create { tool, start, current }) => {
-                create_object(
-                    ed,
-                    &painter,
-                    tool,
-                    start,
-                    current,
-                    (current.0 - start.0).abs().max((current.1 - start.1).abs()) * view.scale > 4.0,
-                );
+                let dragged = (current.0 - start.0).abs().max((current.1 - start.1).abs()) * view.scale > 4.0;
+                create_object(ed, st, &painter, sv, tool, start, current, dragged);
             }
             _ => {}
         }
     }
 
-    if resp.clicked() {
-        if let Some(p) = resp.interact_pointer_pos() {
-            let sp = view.to_slide(p);
+    if resp.clicked()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let sp = view.to_slide(p);
+        let on_edit_band = edit_band.is_some_and(|b| b.contains(p));
+        if !on_edit_band {
             if editing.is_some() {
                 finish_text_edit(ed, st);
             }
-            if ed.tool != Tool::Select {
-                create_object(ed, &painter, ed.tool, sp, sp, false);
+            let hit = hit_test(ed, sp, tol);
+            if ed.tool == Tool::Text && hit.is_some_and(|id| is_text(ed, id)) {
+                // With the text tool, clicking existing text edits it.
+                begin_text_edit(ed, st, hit.expect("checked"), Caret::At(p));
+            } else if ed.tool != Tool::Select {
+                create_object(ed, st, &painter, sv, ed.tool, sp, sp, false);
             } else {
-                match hit_test(ed, sp, tol) {
+                match hit {
                     Some(id) if mods.shift => {
                         if let Some(i) = ed.selection.iter().position(|x| *x == id) {
                             ed.selection.remove(i);
@@ -698,26 +713,13 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
                             ed.selection.push(id);
                         }
                     }
-                    Some(id) if ed.selection == [id] && editing.is_none() && is_text(ed, id) => {
-                        begin_text_edit(ed, st, id, Caret::At(p));
-                    }
+                    // One click on text puts the caret there (PowerPoint).
+                    Some(id) if is_text(ed, id) => begin_text_edit(ed, st, id, Caret::At(p)),
                     Some(id) => ed.selection = vec![id],
                     None => ed.selection.clear(),
                 }
-                ed.history.seal();
             }
-        }
-    }
-
-    if resp.double_clicked()
-        && let Some(p) = resp.interact_pointer_pos()
-        && let Some(id) = hit_test(ed, view.to_slide(p), tol)
-    {
-        ed.selection = vec![id];
-        match ed.object(id).map(|o| &o.kind) {
-            Some(ObjectKind::Text(_)) => begin_text_edit(ed, st, id, Caret::At(p)),
-            Some(ObjectKind::Equation(_)) => ed.focus_source = true,
-            _ => {}
+            ed.history.seal();
         }
     }
 
@@ -775,6 +777,9 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
         ov.line_segment([a, b], Stroke::new(1.0, Color32::from_rgb(255, 45, 85)));
     }
     for id in &ed.selection {
+        if Some(*id) == ed.editing_text {
+            continue; // the editor draws its own outline
+        }
         if let Some(o) = ed.object(*id) {
             match &o.kind {
                 ObjectKind::Shape(s) if s.kind.is_linear() => {
@@ -792,12 +797,10 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
             }
         }
     }
-    if editing.is_none() {
-        for (_, hp) in handles_for(ed, &view) {
-            let r = egui::Rect::from_center_size(hp, Vec2::splat(HANDLE));
-            ov.rect_filled(r, 1.5, Color32::WHITE);
-            ov.rect_stroke(r, 1.5, Stroke::new(1.0, ACCENT), StrokeKind::Inside);
-        }
+    for (_, hp) in handles_for(ed, &view) {
+        let r = egui::Rect::from_center_size(hp, Vec2::splat(HANDLE));
+        ov.rect_filled(r, 1.5, Color32::WHITE);
+        ov.rect_stroke(r, 1.5, Stroke::new(1.0, ACCENT), StrokeKind::Inside);
     }
     match &st.gesture {
         Some(Gesture::Marquee { start, current, .. }) => {
@@ -823,17 +826,34 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
 
     // ---- in-place text editing ----------------------------------------------
     if let Some(id) = ed.editing_text {
-        inline_text_editor(ui, ed, st, &view, id);
+        let start = st.edit_start;
+        match text_edit::editor_ui(ui, ed, &mut st.rich, &view, sv, id, start) {
+            Outcome::Continue => {}
+            Outcome::Finished => {
+                finish_text_edit(ed, st);
+                if ed.object(id).is_some() {
+                    ed.selection = vec![id];
+                }
+            }
+        }
     } else {
-        st.edit_for = None;
+        st.rich = None;
     }
     request
 }
 
-fn create_object(ed: &mut Editor, p: &egui::Painter, tool: Tool, start: (f32, f32), end: (f32, f32), dragged: bool) {
-    let Some(mut kind) = new_object_kind(tool) else {
-        return;
-    };
+#[allow(clippy::too_many_arguments)]
+fn create_object(
+    ed: &mut Editor,
+    st: &mut CanvasState,
+    p: &egui::Painter,
+    sv: &mut Services,
+    tool: Tool,
+    start: (f32, f32),
+    end: (f32, f32),
+    dragged: bool,
+) {
+    let Some(mut kind) = new_object_kind(tool) else { return };
     let rect = match (&mut kind, dragged) {
         (ObjectKind::Shape(s), true) if s.kind.is_linear() => s.set_endpoints(start, end),
         (ObjectKind::Shape(s), false) if s.kind.is_linear() => s.set_endpoints(start, (start.0 + 80.0, start.1)),
@@ -847,7 +867,7 @@ fn create_object(ed: &mut Editor, p: &egui::Painter, tool: Tool, start: (f32, f3
             Rect::new(start.0 - w * 0.5, start.1 - h * 0.5, w, h)
         }
         (ObjectKind::Text(t), d) => {
-            let w = if d { (end.0 - start.0).abs().max(20.0) } else { 220.0 };
+            let w = if d { (end.0 - start.0).abs().max(20.0) } else { 240.0 };
             Rect::new(
                 start.0.min(end.0),
                 start.1.min(end.1),
@@ -855,206 +875,33 @@ fn create_object(ed: &mut Editor, p: &egui::Painter, tool: Tool, start: (f32, f3
                 t.font_size * typeset::LINE_SPREAD,
             )
         }
-        (ObjectKind::Equation(e), _) => Rect::new(start.0, start.1, e.font_size * 3.0, e.font_size * 1.2),
         _ => return,
     };
-    let rect = refit_text(p, &kind, rect);
+    let rect = refit_text(p, sv, &kind, rect);
     let is_text = matches!(kind, ObjectKind::Text(_));
-    let is_eq = matches!(kind, ObjectKind::Equation(_));
     let id = ed.insert_object(kind, rect);
     ed.set_tool(Tool::Select);
     if is_text {
-        ed.editing_text = Some(id);
-    } else if is_eq {
-        ed.focus_source = true;
-    }
-}
-
-fn is_text(ed: &Editor, id: ObjectId) -> bool {
-    matches!(ed.object(id).map(|o| &o.kind), Some(ObjectKind::Text(_)))
-}
-
-fn finish_text_edit(ed: &mut Editor, st: &mut CanvasState) {
-    if let Some(id) = ed.editing_text.take() {
-        ed.history.seal();
-        // Remove boxes left empty (like Keynote/PowerPoint).
-        if let Some(ObjectKind::Text(t)) = ed.object(id).map(|o| &o.kind)
-            && t.text.trim().is_empty()
-        {
-            let keep = std::mem::take(&mut ed.selection);
-            ed.selection = vec![id];
-            ed.delete_selection();
-            ed.selection = keep.into_iter().filter(|x| *x != id).collect();
-        }
-    }
-    st.edit_for = None;
-}
-
-fn inline_text_editor(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, view: &View, id: ObjectId) {
-    let Some(obj) = ed.object(id).cloned() else {
-        ed.editing_text = None;
-        return;
-    };
-    let ObjectKind::Text(t) = &obj.kind else {
-        ed.editing_text = None;
-        return;
-    };
-    let te_id = egui::Id::unique(("inline-text", id.0));
-    let first_frame = st.edit_for != Some(id);
-    if first_frame {
-        st.edit_for = Some(id);
-        st.edit_age = 0;
-        st.edit_buffer = t.text.clone();
-        // Start with the caret at the end (a stale state from an earlier
-        // edit of this box must not decide where typing goes).
-        let mut state = egui::text_edit::TextEditState::load(ui.ctx(), te_id).unwrap_or_default();
-        let end = egui::text::CCursor::new(st.edit_buffer.chars().count());
-        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
-        state.store(ui.ctx(), te_id);
-    } else {
-        st.edit_age = st.edit_age.saturating_add(1);
-        if st.edit_buffer != t.text {
-            // Undo/redo changed the text while editing.
-            st.edit_buffer = t.text.clone();
-        }
-    }
-    // Editing usually starts on the frame of a mouse release, which the new
-    // TextEdit would see as a click elsewhere and drop focus. Keep claiming
-    // focus for the first few frames.
-    const SETTLE_FRAMES: u32 = 3;
-    if st.edit_age < SETTLE_FRAMES {
-        ui.memory_mut(|m| m.request_focus(te_id));
-    }
-
-    let scale = view.scale;
-    let size = t.font_size * scale;
-    let indent = if t.bullets { size * typeset::BULLET_INDENT } else { 0.0 };
-    let width = (obj.rect.w * scale - indent).max(4.0);
-    // Offset so the first baseline matches the rendered text exactly.
-    let probe = ui.painter().layout_job(text_job("Hg", t, scale, f32::INFINITY));
-    let b0 = probe
-        .rows
-        .first()
-        .and_then(|r| r.row.glyphs.first().map(|g| r.pos.y + g.pos.y))
-        .unwrap_or(size);
-    let top = view.pt(obj.rect.x, obj.rect.y) + vec2(indent, size * typeset::FIRST_BASELINE - b0);
-    let height = (obj.rect.h * scale).max(size * typeset::LINE_SPREAD) + size;
-    let rect = egui::Rect::from_min_size(top, vec2(width, height));
-
-    let tb = t.clone();
-    let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
-        ui.painter().layout_job(text_job(buf.as_str(), &tb, scale, wrap))
-    };
-    // Make the editing state obvious on the slide: an accent outline around
-    // the box and a caret that contrasts with the slide background (egui's
-    // default caret is light in dark mode and invisible on a white slide).
-    let bg = ed.slide().background;
-    let light_bg = 0.299 * f32::from(bg.r) + 0.587 * f32::from(bg.g) + 0.114 * f32::from(bg.b) > 140.0;
-    let caret_color = if light_bg {
-        Color32::from_gray(15)
-    } else {
-        Color32::WHITE
-    };
-    let mut outline = view.rect(&obj.rect);
-    outline.max.y = outline.max.y.max(outline.min.y + size * typeset::LINE_SPREAD);
-    ui.painter()
-        .rect_stroke(outline.expand(3.0), 2.0, Stroke::new(1.5, ACCENT), StrokeKind::Outside);
-
-    let mut buf = std::mem::take(&mut st.edit_buffer);
-    let out = ui
-        .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-            let v = ui.visuals_mut();
-            v.text_cursor.stroke = Stroke::new(2.0, caret_color);
-            v.selection.bg_fill = Color32::from_rgba_unmultiplied(10, 132, 255, 80);
-            egui::TextEdit::multiline(&mut buf)
-                .id(te_id)
-                .frame(egui::Frame::NONE)
-                .margin(egui::Margin::ZERO)
-                .desired_width(width)
-                .desired_rows(1)
-                .hint_text("Type here")
-                .layouter(&mut layouter)
-                .show(ui)
-        })
-        .inner;
-    if first_frame && let Caret::At(p) = st.caret {
-        // Put the caret where the user clicked.
-        let c = out.galley.cursor_from_pos(p - out.galley_pos);
-        let mut state = egui::text_edit::TextEditState::load(ui.ctx(), te_id).unwrap_or_default();
-        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(c)));
-        state.store(ui.ctx(), te_id);
-    }
-    // Bullets beside each paragraph's first row.
-    if t.bullets {
-        let mut para_start = true;
-        for row in &out.galley.rows {
-            if para_start && !row.row.glyphs.is_empty() {
-                let y = out.galley_pos.y + row.pos.y + row.row.glyphs[0].pos.y;
-                ui.painter().text(
-                    pos2(top.x - indent, y),
-                    egui::Align2::LEFT_BOTTOM,
-                    "•",
-                    FontId::new(size, text_family(t.bold, t.italic)),
-                    c32(t.color),
-                );
-            }
-            para_start = row.ends_with_newline;
-        }
-    }
-    if buf != t.text {
-        let mut kind = obj.kind.clone();
-        if let ObjectKind::Text(tt) = &mut kind {
-            tt.text = buf.clone();
-        }
-        let rect = refit_text(ui.painter(), &kind, obj.rect);
-        ed.set_object(id, kind, rect, Some(MergeKey::Object(id, 0)));
-    }
-    st.edit_buffer = buf;
-    let esc = ui.input(|i| i.key_pressed(Key::Escape));
-    let lost = st.edit_age >= SETTLE_FRAMES && !ui.memory(|m| m.has_focus(te_id));
-    if esc || lost {
-        finish_text_edit(ed, st);
-        if esc {
-            ed.selection = vec![id];
-        }
+        begin_text_edit(ed, st, id, Caret::End);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::Equation;
 
     #[test]
-    fn resize_keeps_aspect_and_scales_equation_font() {
-        let k = ObjectKind::Equation(Equation {
-            font_size: 20.0,
-            ..Default::default()
-        });
-        let (r, k2) = resize_box(Rect::new(0.0, 0.0, 100.0, 20.0), &k, (1, 1), (100.0, 0.0), true);
-        assert!((r.w - 200.0).abs() < 0.5 && (r.h - 40.0).abs() < 0.5, "{r:?}");
-        match k2 {
-            ObjectKind::Equation(e) => assert_eq!(e.font_size, 40.0),
-            _ => unreachable!(),
-        }
-        // Dragging the top-left corner anchors the bottom-right corner.
-        let (r, _) = resize_box(
-            Rect::new(10.0, 10.0, 100.0, 50.0),
-            &ObjectKind::Image(crate::document::ImageRef {
-                asset: crate::document::AssetId("a".repeat(64)),
-            }),
-            (-1, -1),
-            (-50.0, -5.0),
-            true,
-        );
+    fn resize_keeps_aspect_and_anchors_opposite_corner() {
+        let r = resize_box(Rect::new(10.0, 10.0, 100.0, 50.0), (-1, -1), (-50.0, -5.0), true);
         assert!((r.right() - 110.0).abs() < 1e-3 && (r.bottom() - 60.0).abs() < 1e-3);
         assert!((r.w / r.h - 2.0).abs() < 1e-3);
+        let r = resize_box(Rect::new(0.0, 0.0, 100.0, 20.0), (1, 1), (100.0, 0.0), true);
+        assert!((r.w - 200.0).abs() < 0.5 && (r.h - 40.0).abs() < 0.5, "{r:?}");
     }
 
     #[test]
     fn resize_never_inverts() {
-        let k = ObjectKind::Shape(Shape::new(crate::document::ShapeKind::Rectangle));
-        let (r, _) = resize_box(Rect::new(0.0, 0.0, 10.0, 10.0), &k, (1, 0), (-50.0, 0.0), false);
+        let r = resize_box(Rect::new(0.0, 0.0, 10.0, 10.0), (1, 0), (-50.0, 0.0), false);
         assert_eq!(r.w, MIN_EXTENT);
     }
 

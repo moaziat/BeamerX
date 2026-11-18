@@ -27,7 +27,7 @@ pub enum MenuAction {
     Delete,
     SelectAll,
     InsertText,
-    InsertEquation,
+    InsertMath,
     InsertImage,
     InsertRectangle,
     InsertEllipse,
@@ -137,7 +137,7 @@ impl NativeMenu {
             true,
             &[
                 &item("Text", A::InsertText, Some("Cmd+Alt+T")),
-                &item("Equation", A::InsertEquation, Some("Cmd+Alt+E")),
+                &item("Math ($…$)", A::InsertMath, Some("Cmd+Alt+E")),
                 &item("Image…", A::InsertImage, Some("Cmd+Alt+I")),
                 &sep(),
                 &item("Rectangle", A::InsertRectangle, None),

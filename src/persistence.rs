@@ -26,7 +26,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 pub const FORMAT_NAME: &str = "beamerx";
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 pub const MIMETYPE: &str = "application/x-beamerx";
 pub const EXTENSION: &str = "beamerx";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -142,10 +142,45 @@ fn migrate(mut v: Value) -> Result<Value> {
     if ver < 1 {
         bail!("unsupported project format version {ver}");
     }
-    // Version 1 is current. Future steps go here, e.g.
-    // `if ver == 1 { migrate_v1_to_v2(&mut v)?; ver = 2; }`.
-    v["format_version"] = FORMAT_VERSION.into();
+    let mut ver = ver;
+    if ver == 1 {
+        migrate_v1_to_v2(&mut v);
+        ver = 2;
+    }
+    v["format_version"] = ver.into();
     Ok(v)
+}
+
+/// Format 2 removed the separate equation object: math is written inside
+/// text boxes as `$…$`. Each v1 equation becomes a text box containing
+/// `$\displaystyle …$` at the same position, size and colour.
+fn migrate_v1_to_v2(v: &mut Value) {
+    let Some(slides) = v.pointer_mut("/document/slides").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for slide in slides {
+        let Some(objects) = slide.get_mut("objects").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for o in objects {
+            if o.get("type").and_then(Value::as_str) != Some("equation") {
+                continue;
+            }
+            let source = o.get("source").and_then(Value::as_str).unwrap_or("").to_string();
+            let font_size = o.get("font_size").cloned().unwrap_or_else(|| 20.0.into());
+            let color = o.get("color").cloned().unwrap_or_else(|| "#000000".into());
+            // Leave room so TeX does not wrap the formula.
+            if let Some(w) = o.pointer("/rect/w").and_then(Value::as_f64) {
+                o["rect"]["w"] = (w * 1.25 + 12.0).into();
+            }
+            let obj = o.as_object_mut().expect("checked object");
+            obj.remove("source");
+            obj.insert("type".into(), "text".into());
+            obj.insert("text".into(), format!("$\\displaystyle {}$", source.trim()).into());
+            obj.insert("font_size".into(), font_size);
+            obj.insert("color".into(), color);
+        }
+    }
 }
 
 /// Parse and validate a manifest (`project.json`).
@@ -268,9 +303,9 @@ mod tests {
         });
         s.objects.push(Object {
             id: ids[1],
-            rect: Rect::new(20.0, 80.0, 50.0, 20.0),
-            kind: ObjectKind::Equation(Equation {
-                source: r"\int_0^1 x^2\,dx".into(),
+            rect: Rect::new(20.0, 80.0, 120.0, 20.0),
+            kind: ObjectKind::Text(TextBox {
+                text: r"Area $\int_0^1 x^2\,dx$ and $$\sum_i x_i$$".into(),
                 ..Default::default()
             }),
         });
@@ -399,6 +434,18 @@ mod tests {
         assert_eq!(doc.meta.title, "Fixture deck");
         assert_eq!(assets.len(), 1);
         let kinds: Vec<&str> = doc.slides[0].objects.iter().map(|o| o.kind.label()).collect();
-        assert_eq!(kinds, ["Text", "Equation", "Image", "Rectangle", "Arrow"]);
+        assert_eq!(kinds, ["Text", "Text", "Image", "Rectangle", "Arrow"]);
+        // The v1 equation became a text box with display-style inline math.
+        let eq = &doc.slides[0].objects[1];
+        match &eq.kind {
+            ObjectKind::Text(t) => {
+                assert_eq!(t.text, r"$\displaystyle f(x) = \int_{\R} e^{-x^2}\,dx$");
+                assert_eq!(t.color, Color::rgb(0x1f, 0x5f, 0xa8));
+                assert_eq!(t.font_size, 20.0);
+            }
+            other => panic!("expected text, got {other:?}"),
+        }
+        assert_eq!((eq.rect.x, eq.rect.y), (20.0, 70.0));
+        assert!(eq.rect.w > 120.0);
     }
 }
