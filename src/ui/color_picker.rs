@@ -197,6 +197,7 @@ fn swatch(ui: &mut Ui, c: Color, selected: bool, size: f32, tip: &str) -> Respon
         );
     }
     let hex = c.to_hex().to_uppercase();
+    super::targets::mark(&format!("swatch:{hex}"), resp.rect);
     if tip.is_empty() {
         resp.on_hover_text(hex)
     } else {
@@ -421,6 +422,11 @@ fn popup_body(ui: &mut Ui, id: Id, current: Option<Color>, allow_none: bool) -> 
     if let Some(c) = picked {
         remember(ui.ctx(), c);
         chosen = Some(Choice::Color(c));
+    }
+    // Picking a swatch or "No Color" is final, so the menu closes (as in
+    // Office); wheel, bar and hex edits keep it open for fine-tuning.
+    if picked.is_some() || matches!(chosen, Some(Choice::None)) {
+        egui::Popup::close_id(ui.ctx(), id.with("popup"));
     }
     ui.data_mut(|d| d.insert_temp(id, st));
     chosen

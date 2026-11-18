@@ -455,6 +455,7 @@ fn accessible_name(icon: Icon) -> &'static str {
 }
 
 fn button_info(resp: &Response, ui: &Ui, label: &str, selected: Option<bool>) {
+    super::targets::mark(label, resp.rect);
     resp.widget_info(|| match selected {
         Some(selected) => egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, label),
         None => egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label),

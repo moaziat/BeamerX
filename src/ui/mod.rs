@@ -241,3 +241,41 @@ pub fn heading(ui: &mut egui::Ui, text: &str) {
     let pal = palette_of(ui);
     ui.label(egui::RichText::new(text).size(11.0).strong().color(pal.weak));
 }
+
+/// Screen rectangles of named controls, recorded only while a scripted demo
+/// runs (`--bench demo`) so that it can click the real widgets. Disabled, a
+/// mark costs one relaxed atomic load.
+pub mod targets {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static ON: AtomicBool = AtomicBool::new(false);
+    static RECTS: Mutex<Option<HashMap<String, egui::Rect>>> = Mutex::new(None);
+
+    pub fn enable() {
+        ON.store(true, Ordering::Relaxed);
+    }
+
+    /// Record where control `name` was drawn this frame.
+    pub fn mark(name: &str, rect: egui::Rect) {
+        if !ON.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Ok(mut m) = RECTS.lock() {
+            m.get_or_insert_with(HashMap::new).insert(name.to_owned(), rect);
+        }
+    }
+
+    /// Where control `name` was last drawn.
+    pub fn get(name: &str) -> Option<egui::Rect> {
+        RECTS.lock().ok()?.as_ref()?.get(name).copied()
+    }
+
+    /// Forget all marks (e.g. after a popup closed).
+    pub fn clear() {
+        if let Ok(mut m) = RECTS.lock() {
+            *m = None;
+        }
+    }
+}

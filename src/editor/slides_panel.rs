@@ -187,6 +187,7 @@ pub fn slides_ui(ui: &mut Ui, ed: &mut Editor, sv: &mut Services) {
                 painter.rect_stroke(t_rect, 2.0, stroke, StrokeKind::Outside);
             }
 
+            crate::ui::targets::mark(&format!("slide:{i}"), t_rect);
             if i == ed.current && shown != Some(ed.current) {
                 resp.scroll_to_me(Some(egui::Align::Center));
             }

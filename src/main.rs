@@ -8,7 +8,8 @@ BeamerX — lightweight native editor for scientific Beamer presentations
 
 USAGE:
     beamerx [FILE.beamerx]
-    beamerx --bench <idle|drag|switch|images|saveload> [--out FILE.json] [--seconds N]
+    beamerx --bench <idle|drag|switch|images|saveload|screenshot|smoke> [--out FILE] [--seconds N]
+    beamerx --bench demo --out FRAME_DIR FILE.beamerx   (scripted, self-recorded demo)
     beamerx --version | --help
 
 ENVIRONMENT:

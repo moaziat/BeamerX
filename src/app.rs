@@ -124,6 +124,11 @@ pub struct BeamerApp {
     recovery_dir: PathBuf,
     rss: Option<(Instant, u64)>,
     pub bench: Option<crate::bench::Bench>,
+    /// Present inside the window instead of full screen (screen recordings).
+    pub present_windowed: bool,
+    /// Export destination without extension, used instead of the save
+    /// dialog when set (scripted demos): `<base>.pdf` or `<base>-beamer/`.
+    pub export_base: Option<PathBuf>,
     ctx: egui::Context,
 }
 
@@ -185,6 +190,8 @@ impl BeamerApp {
             recovery_dir: crate::platform::data_dir().join("Recovery"),
             rss: None,
             bench,
+            present_windowed: false,
+            export_base: None,
             ctx,
         };
         app.prefs.theme.apply(&app.ctx);
@@ -500,6 +507,19 @@ impl BeamerApp {
             return;
         }
         let name = self.ed.display_name();
+        if let Some(base) = &self.export_base {
+            let file = base
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or(name);
+            let path = base.with_file_name(if pdf {
+                format!("{file}.pdf")
+            } else {
+                format!("{file}-beamer")
+            });
+            self.start_export(path, pdf);
+            return;
+        }
         let picked = if pdf {
             rfd::FileDialog::new()
                 .set_title("Export PDF")
@@ -656,7 +676,8 @@ impl BeamerApp {
                                 "Exported {} in {:.1} s: {}",
                                 if pdf { "PDF" } else { "Beamer folder" },
                                 ms as f64 / 1000.0,
-                                path.display()
+                                path.file_name()
+                                    .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
                             ),
                             false,
                         ),
@@ -842,7 +863,9 @@ impl BeamerApp {
             index: from.unwrap_or(self.ed.current),
             was_fullscreen,
         });
-        self.ctx.send_viewport_cmd(ViewportCommand::Fullscreen(true));
+        if !self.present_windowed {
+            self.ctx.send_viewport_cmd(ViewportCommand::Fullscreen(true));
+        }
     }
 
     /// Slide index shown in presentation mode, if presenting.
@@ -852,7 +875,7 @@ impl BeamerApp {
 
     fn stop_presenting(&mut self) {
         if let Some(p) = self.presenting.take() {
-            if !p.was_fullscreen {
+            if !p.was_fullscreen && !self.present_windowed {
                 self.ctx.send_viewport_cmd(ViewportCommand::Fullscreen(false));
             }
             self.ed.go_to_slide(p.index);
@@ -937,7 +960,7 @@ impl BeamerApp {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let file = egui::Button::new(RichText::new("  File  ").color(Color32::WHITE).strong()).fill(RIBBON_ACCENT);
-            egui::containers::menu::MenuButton::from_button(file).ui(ui, |ui| {
+            let (file_menu, _) = egui::containers::menu::MenuButton::from_button(file).ui(ui, |ui| {
                 ui.set_min_width(220.0);
                 for (label, action) in [
                     ("New", MenuAction::New),
@@ -950,11 +973,14 @@ impl BeamerApp {
                     if matches!(action, MenuAction::Save | MenuAction::ExportPdf) {
                         ui.separator();
                     }
-                    if ui.button(label).clicked() {
+                    let item = ui.button(label);
+                    crate::ui::targets::mark(&format!("file:{label}"), item.rect);
+                    if item.clicked() {
                         self.on_action(action);
                     }
                 }
             });
+            crate::ui::targets::mark("File", file_menu.rect);
             ui.add_space(6.0);
             for (tab, label) in [
                 (RibbonTab::Home, "Home"),
@@ -971,6 +997,7 @@ impl BeamerApp {
                     RichText::new(label)
                 };
                 let r = ui.add(egui::Button::new(text).frame(false).min_size(egui::vec2(64.0, 24.0)));
+                crate::ui::targets::mark(&format!("tab:{label}"), r.rect);
                 if selected {
                     ui.painter().hline(
                         r.rect.x_range().shrink(8.0),
@@ -1083,7 +1110,9 @@ impl BeamerApp {
             let layout = icons::small(ui, Icon::Layout, "Layout").on_hover_text("New slide with a layout");
             egui::Popup::menu(&layout).show(|ui| {
                 for l in Layout::ALL {
-                    if ui.button(l.label()).clicked() {
+                    let item = ui.button(l.label());
+                    crate::ui::targets::mark(&format!("layout:{}", l.label()), item.rect);
+                    if item.clicked() {
                         self.ed.new_slide_with(l);
                         ui.close();
                     }
@@ -1166,7 +1195,9 @@ impl BeamerApp {
                         }
                         ui.label(RichText::new("Color").small());
                         let mut c = cur.color;
-                        if inspector::color_edit(ui, &mut c) {
+                        let picked = ui.scope(|ui| inspector::color_edit(ui, &mut c));
+                        crate::ui::targets::mark("Font color", picked.response.rect);
+                        if picked.inner {
                             text_edit::set_color(&mut self.ed, &mut self.canvas.rich, c);
                         }
                     });

@@ -55,6 +55,7 @@ fn preview_button(ui: &mut Ui, tooltip: &str, paint: impl Fn(&Ui, Rect)) -> Resp
         ui.painter()
             .line_segment([pos2(x, y + 1.5), pos2(x + 3.0, y - 1.5)], Stroke::new(1.2, fg));
     }
+    super::targets::mark(tooltip, resp.rect);
     resp.on_hover_text(tooltip)
 }
 
@@ -76,6 +77,7 @@ fn option_row(ui: &mut Ui, selected: bool, label: &str, paint: impl Fn(&Ui, Rect
             pal.text,
         );
     }
+    super::targets::mark(label, resp.rect);
     resp.clicked()
 }
 

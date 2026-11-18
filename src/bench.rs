@@ -34,6 +34,9 @@ pub enum Scenario {
     /// actions): create, edit, drag, undo, import, save, reopen, export,
     /// present. Reports pass/fail per step.
     Smoke,
+    /// Scripted product demo through the real UI, recorded as frames into
+    /// the `--out` directory (see `scripts/make-demo-video.sh`).
+    Demo,
 }
 
 impl std::str::FromStr for Scenario {
@@ -47,9 +50,10 @@ impl std::str::FromStr for Scenario {
             "saveload" => Scenario::SaveLoad,
             "screenshot" => Scenario::Screenshot,
             "smoke" => Scenario::Smoke,
+            "demo" => Scenario::Demo,
             _ => {
                 return Err(format!(
-                    "unknown scenario {s:?} (idle|drag|switch|images|saveload|screenshot)"
+                    "unknown scenario {s:?} (idle|drag|switch|images|saveload|screenshot|smoke|demo)"
                 ));
             }
         })
@@ -83,6 +87,7 @@ pub struct Bench {
     cycle_ms: Vec<f64>,
     done_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     smoke: crate::bench_smoke::Smoke,
+    demo: crate::bench_demo::Demo,
 }
 
 impl Bench {
@@ -109,6 +114,7 @@ impl Bench {
             cycle_ms: Vec::new(),
             done_flag: None,
             smoke: Default::default(),
+            demo: Default::default(),
         }
     }
 
@@ -160,6 +166,7 @@ impl Bench {
             Scenario::SaveLoad => self.tick_saveload(app, ctx),
             Scenario::Screenshot => self.tick_screenshot(app, ctx),
             Scenario::Smoke => self.tick_smoke(app, ctx),
+            Scenario::Demo => self.tick_demo(app, ctx),
         }
         !matches!(self.phase, Phase::Done)
     }
@@ -416,6 +423,21 @@ impl Bench {
             self.put("steps", report.steps);
             self.put("passed", json!(report.passed));
             self.put("failed", json!(report.failed));
+            self.finish(app, ctx);
+        }
+    }
+
+    // ---- demo -----------------------------------------------------------------
+
+    fn tick_demo(&mut self, app: &mut BeamerApp, ctx: &egui::Context) {
+        let out = self.out.clone().unwrap_or_else(|| PathBuf::from("beamerx-demo"));
+        if let Some(report) = self.demo.tick(app, ctx, &out) {
+            self.put("frames", json!(report.frames));
+            self.put("dropped_frames", json!(report.dropped));
+            self.put("seconds", json!(report.seconds));
+            self.put("problems", json!(report.problems));
+            // `--out` is the frame directory, not a results file.
+            self.out = None;
             self.finish(app, ctx);
         }
     }

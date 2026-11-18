@@ -18,6 +18,7 @@
 pub mod app;
 pub mod assets;
 pub mod bench;
+mod bench_demo;
 mod bench_smoke;
 pub mod commands;
 pub mod document;
