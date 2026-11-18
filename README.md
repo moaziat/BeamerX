@@ -7,6 +7,8 @@ inline, `$$…$$` centred) rendered live by the real TeX engine; add images and
 shapes; save editable projects; present full-screen; export a self-contained
 **LaTeX Beamer** folder and a **PDF**.
 
+![BeamerX demo: two slides rebuilt from a blank slide, with live LaTeX, pictures, shapes and the generated Beamer source](docs/demo.gif)
+
 Status: **MVP 0.1** (see [scope](#scope-of-010) and
 [known limitations](#known-limitations)). Measured performance is in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
@@ -244,7 +246,9 @@ through its `main.tex`. Coloured step titles and a visible cursor are drawn on
 top. The app records its own frames (not the screen), and AVFoundation encodes
 them (`scripts/frames-to-mp4.swift`, no ffmpeg needed). Optional ORIGINAL
 images or PDF pages (`deck.pdf#73`) come first; the saved Beamer folder is
-kept next to the video. `cargo run --example template_73_74 -- deck.pptx out/` builds the
+kept next to the video. `scripts/mp4-to-gif.swift` turns the video into the
+looping `docs/demo.gif` shown above (palette GIF storing only the changed
+region of each frame; build it with `swiftc -O`). `cargo run --example template_73_74 -- deck.pptx out/` builds the
 reference deck used for slides 73–74 of the winter-school template (`.beamerx`,
 Beamer folder and PDF).
 
