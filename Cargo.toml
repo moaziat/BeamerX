@@ -22,10 +22,23 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [profile.release]
-lto = "thin"
-codegen-units = 1
+# Fast to build for day-to-day `cargo run --release`: parallel codegen
+# (default 16 units), no LTO, incremental rebuilds.
+incremental = true
 strip = "debuginfo"
 panic = "unwind"
+
+[profile.dist]
+# Shipping build (scripts/bundle-macos.sh, scripts/measure.sh): slower to
+# compile, a little smaller and faster at run time.
+inherits = "release"
+incremental = false
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+# Line tables are enough for backtraces and keep debug builds quick.
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 # Image decoding and zlib are unbearably slow unoptimized; keep debug builds usable.

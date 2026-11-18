@@ -29,8 +29,13 @@ to choose one explicitly.
 ```sh
 cargo run --release                 # start the editor
 cargo run --release -- deck.beamerx # open a project
-scripts/bundle-macos.sh             # build dist/BeamerX.app
+scripts/bundle-macos.sh             # build dist/BeamerX.app (shipping build)
 ```
+
+Build profiles: `release` is tuned for quick rebuilds (parallel codegen,
+incremental, no LTO; a rebuild after an edit takes a few seconds on an M4).
+`dist` adds thin LTO and a single codegen unit for the shipped app bundle and
+performance measurements; it takes about 1.5 min to compile.
 
 ## Using BeamerX
 

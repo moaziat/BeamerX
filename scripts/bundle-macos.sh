@@ -4,11 +4,12 @@ set -eu
 cd "$(dirname "$0")/.."
 TARGET=aarch64-apple-darwin
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-cargo build --release --target "$TARGET"
+# `dist` = release + thin LTO + 1 codegen unit (see Cargo.toml).
+cargo build --profile dist --target "$TARGET"
 APP=dist/BeamerX.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "target/$TARGET/release/beamerx" "$APP/Contents/MacOS/BeamerX"
+cp "target/$TARGET/dist/beamerx" "$APP/Contents/MacOS/BeamerX"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -7,8 +7,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT=${1:-target/measurements/$(date +%Y%m%d-%H%M%S)}
 mkdir -p "$OUT"
-cargo build --release --target aarch64-apple-darwin --quiet
-BIN=target/aarch64-apple-darwin/release/beamerx
+cargo build --profile dist --target aarch64-apple-darwin --quiet
+BIN=target/aarch64-apple-darwin/dist/beamerx
 cargo build --release --example export_timing --quiet
 
 {
