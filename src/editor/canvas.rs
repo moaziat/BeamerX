@@ -326,16 +326,7 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
     let mut request = None;
     let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
     let area = resp.rect;
-    let dark = ui.visuals().dark_mode;
-    painter.rect_filled(
-        area,
-        0.0,
-        if dark {
-            Color32::from_gray(38)
-        } else {
-            Color32::from_gray(222)
-        },
-    );
+    painter.rect_filled(area, 0.0, crate::ui::palette_of(ui).workspace);
 
     // ---- view / zoom / pan ----------------------------------------------
     let fit = View::fit(area, 28.0);

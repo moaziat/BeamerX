@@ -87,6 +87,12 @@ optional pane with exact position, size, colours and picture details.
 * **Sections** — add a named divider before the current slide from the Slides
   pane or a slide's context menu. Click a section header to collapse/expand;
   right-click it to rename or remove it. Sections are included in Beamer export.
+* **Colours** — every colour button opens a picker with theme colours (tints
+  and shades), standard colours, suggestions for the current colour (lighter,
+  darker, complementary, analogous, triadic), recent colours, and *More
+  Colors…* with a colour wheel, brightness bar and hex input.
+* **Theme** — *View › Theme*: Light (default), Dark or System; remembered
+  between launches.
 * **View** — pinch or `⌘`-scroll to zoom around the pointer, scroll to pan,
   space-drag to pan, zoom slider bottom right, `⌘0` fit.
 * **Present** — *Present* (top right), *Slide Show › From Beginning*, or

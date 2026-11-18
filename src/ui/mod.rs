@@ -73,12 +73,63 @@ pub enum ThemeChoice {
 }
 
 impl ThemeChoice {
+    pub const ALL: [ThemeChoice; 3] = [ThemeChoice::Light, ThemeChoice::Dark, ThemeChoice::System];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeChoice::Light => "Light",
+            ThemeChoice::Dark => "Dark",
+            ThemeChoice::System => "System",
+        }
+    }
+
     pub fn apply(self, ctx: &egui::Context) {
         ctx.set_theme(match self {
             ThemeChoice::Light => egui::ThemePreference::Light,
             ThemeChoice::Dark => egui::ThemePreference::Dark,
             ThemeChoice::System => egui::ThemePreference::System,
         });
+    }
+}
+
+/// User interface preferences, stored as JSON in the application-support
+/// directory (`prefs.json`).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Prefs {
+    #[serde(default = "default_theme")]
+    pub theme: ThemeChoice,
+}
+
+fn default_theme() -> ThemeChoice {
+    ThemeChoice::Light
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self { theme: default_theme() }
+    }
+}
+
+impl Prefs {
+    fn path() -> std::path::PathBuf {
+        crate::platform::data_dir().join("prefs.json")
+    }
+
+    pub fn load() -> Self {
+        std::fs::read(Self::path())
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) {
+        let p = Self::path();
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(bytes) = serde_json::to_vec_pretty(self) {
+            let _ = crate::assets::write_atomic(&p, &bytes);
+        }
     }
 }
 
@@ -154,6 +205,22 @@ pub fn install_style(ctx: &egui::Context) {
             v.widgets.active.fg_stroke = Stroke::new(1.0, pal.text);
         });
     }
+}
+
+/// Frame of a side pane: card surface with a border towards the workspace.
+pub fn pane(pal: &Palette) -> egui::Frame {
+    egui::Frame::new()
+        .fill(pal.card)
+        .stroke(Stroke::new(1.0, pal.border))
+        .inner_margin(egui::Margin::symmetric(8, 6))
+}
+
+/// Frame of the top band (tabs + ribbon) and the status bar.
+pub fn band(pal: &Palette) -> egui::Frame {
+    egui::Frame::new()
+        .fill(pal.chrome)
+        .stroke(Stroke::new(1.0, pal.border))
+        .inner_margin(egui::Margin::symmetric(8, 4))
 }
 
 /// A rounded card (ribbon, panes).

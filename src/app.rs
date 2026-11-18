@@ -114,6 +114,7 @@ pub struct BeamerApp {
     presenting: Option<Presenting>,
     pub perf: FrameStats,
     pub show_hud: bool,
+    prefs: crate::ui::Prefs,
     tab: RibbonTab,
     show_format_pane: bool,
     show_props: bool,
@@ -131,7 +132,7 @@ impl BeamerApp {
         let ctx = cc.egui_ctx.clone();
         renderer::install_fonts(&ctx);
         crate::ui::install_style(&ctx);
-        crate::ui::ThemeChoice::Light.apply(&ctx);
+        // The theme is applied from the saved preferences once the app exists.
         ctx.all_styles_mut(|s| {
             s.spacing.button_padding = egui::vec2(6.0, 3.0);
         });
@@ -174,6 +175,7 @@ impl BeamerApp {
             presenting: None,
             perf: FrameStats::default(),
             show_hud: false,
+            prefs: crate::ui::Prefs::load(),
             tab: RibbonTab::Home,
             show_format_pane: false,
             show_props: false,
@@ -185,6 +187,7 @@ impl BeamerApp {
             bench,
             ctx,
         };
+        app.prefs.theme.apply(&app.ctx);
         if app.bench.is_none() {
             app.offer_recovery();
         }
@@ -1561,6 +1564,17 @@ impl BeamerApp {
                 ui.checkbox(&mut self.show_hud, "Performance HUD");
             });
         });
+        group(ui, "Theme", |ui| {
+            ui.vertical(|ui| {
+                for t in crate::ui::ThemeChoice::ALL {
+                    if ui.radio(self.prefs.theme == t, t.label()).clicked() && self.prefs.theme != t {
+                        self.prefs.theme = t;
+                        t.apply(ui.ctx());
+                        self.prefs.save();
+                    }
+                }
+            });
+        });
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -1622,6 +1636,12 @@ impl BeamerApp {
                 {
                     self.ed.zoom = Zoom::Fit;
                 }
+                if icons::small(ui, Icon::ZoomIn, "")
+                    .on_hover_text("Zoom in (⌘=)")
+                    .clicked()
+                {
+                    self.zoom_by(1.25);
+                }
                 let cur = self.canvas.last_view.map(|v| v.scale).unwrap_or(1.0);
                 let mut pct = cur * 100.0;
                 let slider = egui::Slider::new(&mut pct, 25.0..=400.0)
@@ -1636,6 +1656,12 @@ impl BeamerApp {
                         scale: pct / 100.0,
                         center,
                     };
+                }
+                if icons::small(ui, Icon::ZoomOut, "")
+                    .on_hover_text("Zoom out (⌘−)")
+                    .clicked()
+                {
+                    self.zoom_by(0.8);
                 }
                 ui.label(RichText::new(format!("{:.0}%", cur * 100.0)).small());
                 ui.separator();
@@ -1871,12 +1897,15 @@ impl eframe::App for BeamerApp {
         self.handle_drops(&ctx);
 
         let mut insert_image = false;
-        egui::Panel::top("ribbon").show(ui, |ui| {
+        let pal = crate::ui::palette_of(ui);
+        egui::Panel::top("ribbon").frame(crate::ui::band(&pal)).show(ui, |ui| {
             ui.add_space(4.0);
             insert_image = self.ribbon(ui);
             ui.add_space(2.0);
         });
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        egui::Panel::bottom("status")
+            .frame(crate::ui::band(&pal))
+            .show(ui, |ui| self.status_bar(ui));
 
         {
             let mut sv = Services {
@@ -1888,6 +1917,7 @@ impl eframe::App for BeamerApp {
             };
             let ed = &mut self.ed;
             egui::Panel::left("slides")
+                .frame(crate::ui::pane(&pal))
                 .resizable(true)
                 .default_size(190.0)
                 .size_range(120.0..=360.0)
@@ -1917,6 +1947,7 @@ impl eframe::App for BeamerApp {
         }
         if self.show_format_pane {
             egui::Panel::right("format-pane")
+                .frame(crate::ui::pane(&pal))
                 .resizable(true)
                 .default_size(270.0)
                 .size_range(220.0..=440.0)
@@ -1972,6 +2003,14 @@ impl eframe::App for BeamerApp {
         }
         if self.show_hud {
             self.hud(&ctx);
+        }
+        if self.bench.is_some() && std::env::var_os("BEAMERX_SHOT_PICKER").is_some() {
+            egui::Window::new("Color")
+                .default_pos([900.0, 140.0])
+                .resizable(false)
+                .show(&ctx, |ui| {
+                    crate::ui::color_picker::preview(ui, crate::document::Color::rgb(31, 95, 168));
+                });
         }
 
         self.update_title();

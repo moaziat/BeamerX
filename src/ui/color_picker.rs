@@ -426,6 +426,17 @@ fn popup_body(ui: &mut Ui, id: Id, current: Option<Color>, allow_none: bool) -> 
     chosen
 }
 
+/// The picker's popup content in a plain container, with the colour wheel
+/// open (visual regression screenshots: `BEAMERX_SHOT_PICKER=1`).
+pub fn preview(ui: &mut Ui, current: Color) {
+    let id = Id::unique("bx-picker-preview");
+    ui.data_mut(|d| {
+        let st: &mut WheelState = d.get_temp_mut_or_default(id);
+        st.open = true;
+    });
+    popup_body(ui, id, Some(current), true);
+}
+
 /// A colour button. `icon` shows an icon with a colour bar under it (like
 /// Office's font colour button); otherwise a plain swatch is shown.
 pub fn color_button(
