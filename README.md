@@ -1,9 +1,11 @@
 # BeamerX
 
 A lightweight, native visual editor for scientific presentations, written in
-Rust for **macOS on Apple Silicon**. Place text, LaTeX equations, images and
-shapes on 16:9 slides; save editable projects; present full-screen; export a
-self-contained **LaTeX Beamer** folder and a **PDF**.
+Rust for **macOS on Apple Silicon**, with a PowerPoint-style layout. Type text
+directly on 16:9 slides with **LaTeX math written like LaTeX** (`$f(x)$`
+inline, `$$…$$` centred) rendered live by the real TeX engine; add images and
+shapes; save editable projects; present full-screen; export a self-contained
+**LaTeX Beamer** folder and a **PDF**.
 
 Status: **MVP 0.1** (see [scope](#scope-of-010) and
 [known limitations](#known-limitations)). Measured performance is in
@@ -15,7 +17,7 @@ Status: **MVP 0.1** (see [scope](#scope-of-010) and
 |---|---|
 | OS | macOS 11+ on Apple Silicon (`aarch64-apple-darwin`). Other platforms compile but are not supported releases. |
 | Rust | 1.85 or newer (`rustup` stable) |
-| LaTeX | **[Tectonic](https://tectonic-typesetting.github.io/)** (recommended: `brew install tectonic`) or a TeX Live/MacTeX `xelatex`/`lualatex`/`pdflatex`. Needed for equation previews and PDF export; everything else works without it. Tectonic downloads the LaTeX packages it needs on first use (network required once). |
+| LaTeX | **[Tectonic](https://tectonic-typesetting.github.io/)** (recommended: `brew install tectonic`) or a TeX Live/MacTeX `xelatex`/`lualatex`/`pdflatex`. Needed for math previews and PDF export; everything else works without it. Tectonic downloads the LaTeX packages it needs on first use (network required once). |
 
 BeamerX looks for the engine on `PATH` and in `/opt/homebrew/bin`,
 `/usr/local/bin`, `/Library/TeX/texbin` and `~/.cargo/bin` (apps started from
@@ -32,32 +34,46 @@ scripts/bundle-macos.sh             # build dist/BeamerX.app
 
 ## Using BeamerX
 
-* **Insert** with the toolbar, the *Insert* menu, or single-key tools on the
-  canvas: `V` select, `T` text, `E` equation, `R` rectangle, `O` ellipse, `L`
-  line, `A` arrow, `I` image. Click to place at a default size or drag to size.
-* **Images**: drag PNG/JPEG files from Finder onto the slide, or *Insert ›
-  Image…* (multi-select supported).
-* **Text**: double-click (or `Enter`) to edit in place. Bold, italic, size,
-  colour, alignment and bullet lists are in the inspector.
-* **Equations**: type LaTeX math in the inspector (`Enter` or double-click
-  focuses it). The preview is typeset by the real LaTeX engine, ~0.2 s after you
-  stop typing. Drag a corner to scale (changes the font size).
-  Document-wide macros go in *LaTeX preamble* (shown when nothing is selected).
-* **Edit**: shift-click / marquee for multi-selection; drag to move (snaps to
-  slide centre/edges and other objects, hold `⌘` to disable, `⇧` to constrain);
-  arrow keys nudge (`⇧` = 10 bp); align and z-order in the inspector or
-  *Arrange* menu; `⌘C`/`⌘X`/`⌘V`/`⌘D`; `⌫` deletes; unlimited-ish undo
-  (`⌘Z`/`⇧⌘Z`, bounded by memory).
-* **Slides**: thumbnails on the left: click to select, drag to reorder,
-  right-click for new/duplicate/delete; `⇧⌘N` new slide.
-* **View**: pinch or `⌘`-scroll to zoom around the pointer, scroll to pan,
-  space-drag to pan, `⌘0` fit, `⌘1` actual size.
-* **Present**: `⌘↩` or *Present*. Arrows / space / click to advance, `Esc` to
-  leave.
+The window follows PowerPoint: a ribbon (**File**, Home, Insert, Design,
+Arrange, Slide Show, View) at the top, slide thumbnails on the left, the slide
+in the middle, zoom at the bottom right. *Arrange › Format Pane* opens an
+optional pane with exact position, size, colours and picture details.
+
+* **Text** — *Text Box* (Home or Insert, or `T`), then click on the slide and
+  type. Click any text box to put the caret there; select a box and just start
+  typing to add to it. `Esc` or clicking elsewhere finishes; empty boxes are
+  removed. Font size, bold, italic, colour, alignment and bullets are in
+  *Home › Font / Paragraph* (they apply to the whole box).
+* **Math** — write LaTeX math inside any text box exactly as in LaTeX:
+  `The energy $E = mc^2$ is…` renders inline as soon as the closing `$` is
+  typed; `$$\int_0^1 f(x)\,dx$$` is a centred display formula; `\$` is a
+  literal dollar sign. When the caret is inside a formula its source is shown
+  for editing; clicking a rendered formula opens it. Errors appear in red under
+  the box. Formulas are typeset by the same LaTeX engine as the export (about
+  0.5 s after you stop typing the first time, instant once cached).
+  *Home › Math* inserts `$ $` with the caret inside. Macros go in
+  *Design › Title & LaTeX…*.
+* **Move / resize** — drag any object to move it (for the text box being
+  edited, drag its blue outline). Handles resize; text boxes resize in width and
+  grow in height with their content. Snapping to the slide centre/edges and other
+  objects (hold `⌘` to disable, `⇧` to constrain); arrow keys nudge (`⇧` = 10 pt).
+* **Images** — drag PNG/JPEG files from Finder onto the slide, or *Insert ›
+  Picture…*.
+* **Shapes** — rectangle, oval, line and arrow (*Home › Drawing* or *Insert*);
+  fill and outline in *Home › Drawing*.
+* **Edit** — shift-click / marquee for multi-selection; align and order in
+  *Arrange*; `⌘C`/`⌘X`/`⌘V`/`⌘D`; `⌫` deletes; undo/redo `⌘Z`/`⇧⌘Z`.
+* **Slides** — *Home › New Slide*, or thumbnails: click to select, drag to
+  reorder, right-click for new/duplicate/delete.
+* **View** — pinch or `⌘`-scroll to zoom around the pointer, scroll to pan,
+  space-drag to pan, zoom slider bottom right, `⌘0` fit.
+* **Present** — *Present* (top right), *Slide Show › From Beginning*, or
+  `⌘↩`. Arrows / space / click to advance, `Esc` to leave.
 * **Save** `⌘S`; unsaved work is auto-saved to a recovery file 30 s after the
   last change and offered back after a crash.
-* **Export**: *Export Beamer* (`⌘E`) writes a folder with `main.tex` and
-  `images/`; *Export PDF* (`⇧⌘E`) compiles it in the background (cancellable).
+* **Export** — *File › Export Beamer* (`⌘E`) writes a folder with `main.tex`
+  and `images/`; *File › Export PDF* (`⇧⌘E`) compiles it in the background
+  (cancellable).
 
 ## Project format (`.beamerx`)
 
@@ -65,7 +81,9 @@ A ZIP container: `mimetype`, a versioned `project.json` (document + asset
 manifest) and the **original image bytes** under `assets/<sha256>.<ext>`
 (stored, not recompressed, de-duplicated by content hash). No base64 in JSON.
 Saves are atomic (temp file → fsync → rename); a failed save never damages the
-previous file. Loading validates structure, bounds sizes, never uses archive
+previous file. Format 2 stores math inside text boxes; format-1 files (which
+had separate equation objects) are converted on open into text boxes containing
+`$\displaystyle …$`. Loading validates structure, bounds sizes, never uses archive
 entry names as paths, and verifies every image against its hash. Format
 changes go through `persistence::migrate` with frozen fixtures in
 `tests/fixtures`.
@@ -76,9 +94,11 @@ All geometry is stored in slide-space PostScript points (`bp`) on a 16 cm × 9 c
 page, exactly `\documentclass[aspectratio=169]{beamer}`, and every object is
 placed absolutely with TikZ, so positions and sizes match the editor exactly.
 
-* **Equations** are typeset by the same LaTeX engine, preamble, packages
+* **Math** is typeset by the same LaTeX engine, preamble, packages
   (`amsmath`, `amssymb`, `fix-cm`) and font size in the editor and in the
-  export: what you see is what TeX produces.
+  export: what you see is what TeX produces. Inline formulas sit on the text
+  baseline using the depth TeX measures, and are never split across lines in
+  either place.
 * **Text** uses Latin Modern Sans in both the editor (bundled font) and
   Beamer's default text font. Line positions follow the same baseline
   convention (`\strut`, 1.2 × size line spacing). Line breaks can occasionally
@@ -92,10 +112,11 @@ placed absolutely with TikZ, so positions and sizes match the editor exactly.
 
 ## Known limitations
 
-* Text formatting is per text box (no mixed bold/italic inside one box); text
-  boxes do not support inline `$…$` math — use equation objects.
-* Equation previews ignore colour commands inside the source (`\color`); the
-  object colour applies to the whole equation (export honours inline colours).
+* Text formatting is per text box (no mixed bold/italic inside one box).
+* Math previews ignore colour commands inside the source (`\color`); the text
+  colour applies to the whole formula (export honours inline colours).
+* Plain text outside `$…$` is literal: LaTeX commands there are printed, not
+  executed.
 * User preamble lines that only make sense in Beamer (`\usetheme`,
   `\setbeamer…`, …) are skipped when typesetting previews.
 * Equation preview rasterization uses macOS CoreGraphics; other platforms show
@@ -111,12 +132,13 @@ placed absolutely with TikZ, so positions and sizes match the editor exactly.
 src/
   document.rs     typed, versioned model (slide space in bp); no GUI types
   commands.rs     reversible commands, bounded undo history, dirty tracking
-  editor/         editor state; canvas (hit-test, drag/resize/snap, inline
-                  text); inspector; slide thumbnails
-  renderer/       paints slides for canvas, thumbnails and presentation;
-                  bounded LRU texture cache with downsampled image levels
+  editor/         editor state; canvas (hit-test, drag/resize/snap); on-slide
+                  text editor with live math; format pane; slide thumbnails
+  renderer/       paints slides for canvas, thumbnails and presentation; text
+                  layout with inline math; bounded LRU texture cache
   assets.rs       content-addressed image store, import guards, decoding
-  math.rs         debounced, batched, disk-cached LaTeX equation previews
+  rich.rs         `$…$` / `$$…$$` parsing shared by editor layout and export
+  math.rs         debounced, batched, disk-cached LaTeX math previews
   latex.rs        external engine discovery; cancellable, time-limited runs
   export.rs       Beamer generation; atomic folder and PDF export
   persistence.rs  .beamerx packages; atomic save; validated load; migrations
@@ -145,7 +167,7 @@ cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all                       # LaTeX integration tests need tectonic
 cargo run --example showcase -- out/   # sample deck + Beamer + PDF + PNGs
-cargo run --release -- --bench smoke   # end-to-end UI workflow (16 steps)
+cargo run --release -- --bench smoke   # end-to-end UI workflow (19 steps)
 scripts/measure.sh                     # performance measurements
 ```
 
@@ -153,7 +175,7 @@ Logging: `BEAMERX_LOG=beamerx=debug cargo run`.
 
 ## Scope of 0.1
 
-Slides (add/remove/duplicate/reorder), text, equations, PNG/JPEG images,
+Slides (add/remove/duplicate/reorder), text with inline/display LaTeX math, PNG/JPEG images,
 lines/arrows/rectangles/ellipses; move/resize, multi-selection, alignment,
 z-order, undo/redo, zoom/pan; `.beamerx` save/open with packaged assets;
 autosave recovery; full-screen presentation; Beamer folder and PDF export.
