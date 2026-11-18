@@ -13,6 +13,7 @@ use crate::perf::FrameStats;
 use crate::persistence::{self, Loaded, SaveSnapshot};
 use crate::platform::menu::{MenuAction, NativeMenu};
 use crate::renderer::{self, PaintOpts, Services, View, textures::TextureCache};
+use crate::ui::icons::{self, Icon};
 use crate::{commands::Command, document::ShapeKind, export};
 use anyhow::Result;
 use egui::{Color32, RichText, ViewportCommand};
@@ -973,29 +974,22 @@ impl BeamerApp {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let present =
-                    egui::Button::new(RichText::new("Present").color(Color32::WHITE).strong()).fill(RIBBON_ACCENT);
-                if ui
-                    .add(present)
+                if icons::small_accent(ui, Icon::Present, "Present", RIBBON_ACCENT)
                     .on_hover_text("Present from the current slide (⌘↩)")
                     .clicked()
                 {
                     self.start_presenting(None);
                 }
-                if ui
-                    .add_enabled(self.ed.history.can_redo(), egui::Button::new("Redo"))
-                    .on_hover_text("⇧⌘Z")
-                    .clicked()
-                {
-                    self.ed.redo();
-                }
-                if ui
-                    .add_enabled(self.ed.history.can_undo(), egui::Button::new("Undo"))
-                    .on_hover_text("⌘Z")
-                    .clicked()
-                {
-                    self.ed.undo();
-                }
+                ui.add_enabled_ui(self.ed.history.can_redo(), |ui| {
+                    if icons::small(ui, Icon::Redo, "Redo").on_hover_text("⇧⌘Z").clicked() {
+                        self.ed.redo();
+                    }
+                });
+                ui.add_enabled_ui(self.ed.history.can_undo(), |ui| {
+                    if icons::small(ui, Icon::Undo, "Undo").on_hover_text("⌘Z").clicked() {
+                        self.ed.undo();
+                    }
+                });
             });
         });
         ui.add_space(2.0);
@@ -1003,17 +997,20 @@ impl BeamerApp {
         // Labels never wrap (a narrow window would otherwise stack them one
         // character per line); the ribbon scrolls sideways instead.
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-        egui::ScrollArea::horizontal().id_salt("ribbon-body").show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                ui.set_height(RIBBON_H);
-                match self.tab {
-                    RibbonTab::Home => self.tab_home(ui, &mut insert_image),
-                    RibbonTab::Insert => self.tab_insert(ui, &mut insert_image),
-                    RibbonTab::Design => self.tab_design(ui),
-                    RibbonTab::Arrange => self.tab_arrange(ui),
-                    RibbonTab::SlideShow => self.tab_slideshow(ui),
-                    RibbonTab::View => self.tab_view(ui),
-                }
+        let pal = crate::ui::palette_of(ui);
+        crate::ui::card(&pal).show(ui, |ui| {
+            egui::ScrollArea::horizontal().id_salt("ribbon-body").show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.set_height(RIBBON_H);
+                    match self.tab {
+                        RibbonTab::Home => self.tab_home(ui, &mut insert_image),
+                        RibbonTab::Insert => self.tab_insert(ui, &mut insert_image),
+                        RibbonTab::Design => self.tab_design(ui),
+                        RibbonTab::Arrange => self.tab_arrange(ui),
+                        RibbonTab::SlideShow => self.tab_slideshow(ui),
+                        RibbonTab::View => self.tab_view(ui),
+                    }
+                });
             });
         });
         insert_image
@@ -1021,14 +1018,14 @@ impl BeamerApp {
 
     fn tab_home(&mut self, ui: &mut egui::Ui, insert_image: &mut bool) {
         group(ui, "Clipboard", |ui| {
-            if big(ui, "Paste").clicked() {
+            if icons::big(ui, Icon::Paste, "Paste").clicked() {
                 self.on_action(MenuAction::Paste);
             }
             ui.vertical(|ui| {
-                if ui.small_button("Cut").clicked() {
+                if icons::small(ui, Icon::Cut, "Cut").clicked() {
                     self.on_action(MenuAction::Cut);
                 }
-                if ui.small_button("Copy").clicked() {
+                if icons::small(ui, Icon::Copy, "Copy").clicked() {
                     self.on_action(MenuAction::Copy);
                 }
             });
@@ -1046,7 +1043,7 @@ impl BeamerApp {
                 ui.end_row();
                 self.tool_button(ui, "Line", Tool::Shape(ShapeKind::Line));
                 self.tool_button(ui, "Arrow", Tool::Shape(ShapeKind::Arrow));
-                if ui.small_button("Picture…").clicked() {
+                if icons::small(ui, Icon::Picture, "Picture…").clicked() {
                     *insert_image = true;
                 }
                 ui.end_row();
@@ -1054,7 +1051,7 @@ impl BeamerApp {
             self.shape_style(ui);
         });
         group(ui, "Math", |ui| {
-            if big(ui, "Math\n$ … $")
+            if icons::big(ui, Icon::Math, "Math\n$ … $")
                 .on_hover_text("Insert inline LaTeX math (⌥⌘E). Or just type $…$ in any text box.")
                 .clicked()
             {
@@ -1063,10 +1060,10 @@ impl BeamerApp {
         });
         group(ui, "Arrange", |ui| {
             ui.vertical(|ui| {
-                if ui.small_button("Bring to Front").clicked() {
+                if icons::small(ui, Icon::Front, "Bring to Front").clicked() {
                     self.ed.z_order(crate::editor::ZOrder::Front);
                 }
-                if ui.small_button("Send to Back").clicked() {
+                if icons::small(ui, Icon::Back, "Send to Back").clicked() {
                     self.ed.z_order(crate::editor::ZOrder::Back);
                 }
             });
@@ -1074,6 +1071,14 @@ impl BeamerApp {
     }
 
     fn tool_button(&mut self, ui: &mut egui::Ui, label: &str, tool: Tool) {
+        let icon = match tool {
+            Tool::Text => Icon::TextBox,
+            Tool::Shape(ShapeKind::Rectangle) => Icon::Rectangle,
+            Tool::Shape(ShapeKind::Ellipse) => Icon::Oval,
+            Tool::Shape(ShapeKind::Line) => Icon::Line,
+            Tool::Shape(ShapeKind::Arrow) => Icon::Arrow,
+            Tool::Select => Icon::Properties,
+        };
         let tip = match tool {
             Tool::Text => "Text box (T): click on the slide, then type. Use $…$ for math.",
             Tool::Shape(ShapeKind::Rectangle) => "Rectangle (R): click or drag on the slide",
@@ -1082,8 +1087,7 @@ impl BeamerApp {
             Tool::Shape(ShapeKind::Arrow) => "Arrow (A): drag on the slide",
             Tool::Select => "Select (V)",
         };
-        if ui
-            .selectable_label(self.ed.tool == tool, label)
+        if icons::small_toggle(ui, icon, label, self.ed.tool == tool)
             .on_hover_text(tip)
             .clicked()
         {
@@ -1093,29 +1097,37 @@ impl BeamerApp {
 
     /// "New Slide" (Title and Content) plus a layout menu, as in PowerPoint.
     fn new_slide_buttons(&mut self, ui: &mut egui::Ui) {
-        if big(ui, "New\nSlide")
+        if icons::big(ui, Icon::NewSlide, "New\nSlide")
             .on_hover_text("New slide with title and content (⇧⌘N)")
             .clicked()
         {
             self.ed.new_slide_with(Layout::TitleAndContent);
         }
         ui.vertical(|ui| {
-            ui.menu_button("Layout", |ui| {
+            let layout = icons::small(ui, Icon::Layout, "Layout").on_hover_text("New slide with a layout");
+            egui::Popup::menu(&layout).show(|ui| {
                 for l in Layout::ALL {
                     if ui.button(l.label()).clicked() {
                         self.ed.new_slide_with(l);
                         ui.close();
                     }
                 }
-            })
-            .response
-            .on_hover_text("New slide with a layout");
-            if ui.small_button("Duplicate").clicked() {
-                self.ed.duplicate_slide();
-            }
-            if ui.small_button("Delete").clicked() {
-                self.ed.delete_slide();
-            }
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                if icons::small(ui, Icon::Duplicate, "")
+                    .on_hover_text("Duplicate slide")
+                    .clicked()
+                {
+                    self.ed.duplicate_slide();
+                }
+                if icons::small(ui, Icon::Delete, "")
+                    .on_hover_text("Delete slide")
+                    .clicked()
+                {
+                    self.ed.delete_slide();
+                }
+            });
         });
     }
 
@@ -1137,12 +1149,18 @@ impl BeamerApp {
                             let v = t.font_size;
                             self.ed.update_selected_text(0, |x| x.font_size = v);
                         }
-                        if ui.small_button("A+").on_hover_text("Increase font size").clicked() {
+                        if icons::text(ui, RichText::new("A+").strong())
+                            .on_hover_text("Increase font size")
+                            .clicked()
+                        {
                             self.ed.update_selected_text(0, |x| {
                                 x.font_size = (x.font_size + 2.0).min(crate::document::MAX_FONT_SIZE)
                             });
                         }
-                        if ui.small_button("A−").on_hover_text("Decrease font size").clicked() {
+                        if icons::text(ui, RichText::new("A−"))
+                            .on_hover_text("Decrease font size")
+                            .clicked()
+                        {
                             self.ed.update_selected_text(0, |x| {
                                 x.font_size = (x.font_size - 2.0).max(crate::document::MIN_FONT_SIZE)
                             });
@@ -1150,16 +1168,14 @@ impl BeamerApp {
                     });
                     ui.horizontal(|ui| {
                         let tip = "selection, word at the caret, or what you type next";
-                        if ui
-                            .selectable_label(cur.bold, RichText::new(" B ").strong())
+                        if icons::text_toggle(ui, RichText::new("B").strong(), cur.bold)
                             .on_hover_text(format!("Bold (⌘B): {tip}"))
                             .clicked()
                         {
                             text_edit::toggle_style(&mut self.ed, &mut self.canvas.rich, 0);
                             text_edit::refocus(&ctx, &self.ed);
                         }
-                        if ui
-                            .selectable_label(cur.italic, RichText::new(" I ").italics())
+                        if icons::text_toggle(ui, RichText::new("I").italics(), cur.italic)
                             .on_hover_text(format!("Italic (⌘I): {tip}"))
                             .clicked()
                         {
@@ -1187,30 +1203,28 @@ impl BeamerApp {
                 let t = style.clone().unwrap_or_default();
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
-                        if ui
-                            .selectable_label(para.list == ListKind::Bullet, "• Bullets")
+                        if icons::small_toggle(ui, Icon::Bullets, "", para.list == ListKind::Bullet)
+                            .on_hover_text("Bullets")
                             .clicked()
                         {
                             text_edit::toggle_list(&mut self.ed, &mut self.canvas.rich, ListKind::Bullet);
                             text_edit::refocus(&ctx, &self.ed);
                         }
-                        if ui
-                            .selectable_label(para.list == ListKind::Number, "1. Numbering")
+                        if icons::small_toggle(ui, Icon::Numbering, "", para.list == ListKind::Number)
+                            .on_hover_text("Numbering")
                             .clicked()
                         {
                             text_edit::toggle_list(&mut self.ed, &mut self.canvas.rich, ListKind::Number);
                             text_edit::refocus(&ctx, &self.ed);
                         }
-                        if ui
-                            .small_button("Outdent")
+                        if icons::small(ui, Icon::Outdent, "")
                             .on_hover_text("Decrease list level (⇧Tab)")
                             .clicked()
                         {
                             text_edit::shift_level(&mut self.ed, &mut self.canvas.rich, -1);
                             text_edit::refocus(&ctx, &self.ed);
                         }
-                        if ui
-                            .small_button("Indent")
+                        if icons::small(ui, Icon::Indent, "")
                             .on_hover_text("Increase list level (Tab)")
                             .clicked()
                         {
@@ -1237,12 +1251,15 @@ impl BeamerApp {
                             text_edit::update_paras(&mut self.ed, &mut self.canvas.rich, |p| p.style = st);
                             text_edit::refocus(&ctx, &self.ed);
                         }
-                        for (a, label) in [
-                            (TextAlign::Left, "Left"),
-                            (TextAlign::Center, "Center"),
-                            (TextAlign::Right, "Right"),
+                        for (a, icon, label) in [
+                            (TextAlign::Left, Icon::AlignLeft, "Align left"),
+                            (TextAlign::Center, Icon::AlignCenter, "Align center"),
+                            (TextAlign::Right, Icon::AlignRight, "Align right"),
                         ] {
-                            if ui.selectable_label(t.align == a, label).clicked() {
+                            if icons::small_toggle(ui, icon, "", t.align == a)
+                                .on_hover_text(label)
+                                .clicked()
+                            {
                                 self.ed.update_selected_text(4, |x| x.align = a);
                                 text_edit::refocus(&ctx, &self.ed);
                             }
@@ -1304,13 +1321,13 @@ impl BeamerApp {
             self.new_slide_buttons(ui);
         });
         group(ui, "Text", |ui| {
-            if big(ui, "Text\nBox")
+            if icons::big(ui, Icon::TextBox, "Text\nBox")
                 .on_hover_text("Insert a text box and start typing")
                 .clicked()
             {
                 self.insert_kind(Tool::Text);
             }
-            if big(ui, "Math\n$ … $")
+            if icons::big(ui, Icon::Math, "Math\n$ … $")
                 .on_hover_text("Inline LaTeX math. Type $…$ in any text box; $$…$$ for a centred formula.")
                 .clicked()
             {
@@ -1318,7 +1335,7 @@ impl BeamerApp {
             }
         });
         group(ui, "Images", |ui| {
-            if big(ui, "Picture…")
+            if icons::big(ui, Icon::Picture, "Picture…")
                 .on_hover_text("PNG or JPEG. You can also drop files from Finder onto the slide.")
                 .clicked()
             {
@@ -1326,13 +1343,13 @@ impl BeamerApp {
             }
         });
         group(ui, "Shapes", |ui| {
-            for (label, k) in [
-                ("Rectangle", ShapeKind::Rectangle),
-                ("Oval", ShapeKind::Ellipse),
-                ("Line", ShapeKind::Line),
-                ("Arrow", ShapeKind::Arrow),
+            for (label, icon, k) in [
+                ("Rectangle", Icon::Rectangle, ShapeKind::Rectangle),
+                ("Oval", Icon::Oval, ShapeKind::Ellipse),
+                ("Line", Icon::Line, ShapeKind::Line),
+                ("Arrow", Icon::Arrow, ShapeKind::Arrow),
             ] {
-                if big(ui, label).clicked() {
+                if icons::big(ui, icon, label).clicked() {
                     self.insert_kind(Tool::Shape(k));
                 }
             }
@@ -1363,13 +1380,13 @@ impl BeamerApp {
                         );
                     }
                 });
-                if ui.small_button("Apply to All Slides").clicked() {
+                if icons::small(ui, Icon::Background, "Apply to All Slides").clicked() {
                     self.ed.apply_background_to_all();
                 }
             });
         });
         group(ui, "Presentation", |ui| {
-            if big(ui, "Title &\nLaTeX…")
+            if icons::big(ui, Icon::Properties, "Title &\nLaTeX…")
                 .on_hover_text("Title, author and the LaTeX preamble (macros, packages)")
                 .clicked()
             {
@@ -1383,23 +1400,23 @@ impl BeamerApp {
         group(ui, "Align", |ui| {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    for (l, a) in [
-                        ("Left", Align::Left),
-                        ("Center", Align::HCenter),
-                        ("Right", Align::Right),
+                    for (l, icon, a) in [
+                        ("Left", Icon::AlignLeft, Align::Left),
+                        ("Center", Icon::AlignCenter, Align::HCenter),
+                        ("Right", Icon::AlignRight, Align::Right),
                     ] {
-                        if ui.small_button(l).clicked() {
+                        if icons::small(ui, icon, l).clicked() {
                             self.ed.align(a);
                         }
                     }
                 });
                 ui.horizontal(|ui| {
-                    for (l, a) in [
-                        ("Top", Align::Top),
-                        ("Middle", Align::VCenter),
-                        ("Bottom", Align::Bottom),
+                    for (l, icon, a) in [
+                        ("Top", Icon::AlignTop, Align::Top),
+                        ("Middle", Icon::AlignMiddle, Align::VCenter),
+                        ("Bottom", Icon::AlignBottom, Align::Bottom),
                     ] {
-                        if ui.small_button(l).clicked() {
+                        if icons::small(ui, icon, l).clicked() {
                             self.ed.align(a);
                         }
                     }
@@ -1409,18 +1426,18 @@ impl BeamerApp {
         group(ui, "Order", |ui| {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    if ui.small_button("Bring to Front").clicked() {
+                    if icons::small(ui, Icon::Front, "Bring to Front").clicked() {
                         self.ed.z_order(ZOrder::Front);
                     }
-                    if ui.small_button("Forward").clicked() {
+                    if icons::small(ui, Icon::Front, "Forward").clicked() {
                         self.ed.z_order(ZOrder::Forward);
                     }
                 });
                 ui.horizontal(|ui| {
-                    if ui.small_button("Send to Back").clicked() {
+                    if icons::small(ui, Icon::Back, "Send to Back").clicked() {
                         self.ed.z_order(ZOrder::Back);
                     }
-                    if ui.small_button("Backward").clicked() {
+                    if icons::small(ui, Icon::Back, "Backward").clicked() {
                         self.ed.z_order(ZOrder::Backward);
                     }
                 });
@@ -1468,7 +1485,7 @@ impl BeamerApp {
             });
         });
         group(ui, "Pane", |ui| {
-            if ui.selectable_label(self.show_format_pane, "Format\nPane").clicked() {
+            if icons::big_toggle(ui, Icon::Pane, "Format\nPane", self.show_format_pane).clicked() {
                 self.show_format_pane = !self.show_format_pane;
             }
         });
@@ -1476,10 +1493,10 @@ impl BeamerApp {
 
     fn tab_slideshow(&mut self, ui: &mut egui::Ui) {
         group(ui, "Start Slide Show", |ui| {
-            if big(ui, "From\nBeginning").clicked() {
+            if icons::big(ui, Icon::Present, "From\nBeginning").clicked() {
                 self.start_presenting(Some(0));
             }
-            if big(ui, "From Current\nSlide").clicked() {
+            if icons::big(ui, Icon::Present, "From Current\nSlide").clicked() {
                 self.start_presenting(None);
             }
         });
@@ -1492,16 +1509,16 @@ impl BeamerApp {
 
     fn tab_view(&mut self, ui: &mut egui::Ui) {
         group(ui, "Zoom", |ui| {
-            if big(ui, "Zoom\nOut").clicked() {
+            if icons::big(ui, Icon::ZoomOut, "Zoom\nOut").clicked() {
                 self.zoom_by(0.8);
             }
-            if big(ui, "Zoom\nIn").clicked() {
+            if icons::big(ui, Icon::ZoomIn, "Zoom\nIn").clicked() {
                 self.zoom_by(1.25);
             }
-            if big(ui, "Fit to\nWindow").clicked() {
+            if icons::big(ui, Icon::Fit, "Fit to\nWindow").clicked() {
                 self.ed.zoom = Zoom::Fit;
             }
-            if big(ui, "100%").clicked() {
+            if icons::big(ui, Icon::Fit, "100%").clicked() {
                 self.on_action(MenuAction::ActualSize);
             }
         });
@@ -1515,6 +1532,7 @@ impl BeamerApp {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            ui.set_min_height(26.0);
             let n = self.ed.doc.slides.len();
             ui.label(
                 RichText::new(format!(
@@ -1545,7 +1563,7 @@ impl BeamerApp {
             if let Some((label, _)) = &self.busy.exporting {
                 ui.spinner();
                 ui.label(RichText::new(label.as_str()).small());
-                cancel = ui.small_button("Cancel").clicked();
+                cancel = icons::small(ui, Icon::Close, "Cancel").clicked();
             }
             if cancel && let Some((_, flag)) = &self.busy.exporting {
                 flag.store(true, Ordering::Relaxed);
@@ -1565,8 +1583,7 @@ impl BeamerApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Zoom (PowerPoint keeps it bottom-right).
-                if ui
-                    .small_button("Fit")
+                if icons::small(ui, Icon::Fit, "Fit")
                     .on_hover_text("Fit slide to window (⌘0)")
                     .clicked()
                 {
@@ -1692,19 +1709,23 @@ impl BeamerApp {
 }
 
 const RIBBON_ACCENT: Color32 = Color32::from_rgb(196, 62, 28);
-const RIBBON_H: f32 = 64.0;
+const RIBBON_H: f32 = 74.0;
 
 /// A labelled ribbon group with a separator after it.
 fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     let r = ui
         .vertical(|ui| {
-            let row = ui.horizontal(|ui| {
-                ui.set_min_height(RIBBON_H - 18.0);
+            ui.spacing_mut().item_spacing.y = 1.0;
+            let row = ui.horizontal_top(|ui| {
+                ui.set_min_height(58.0);
                 add(ui);
             });
             // Title centred under the group's own width (not the panel's).
             let w = row.response.rect.width().max(40.0);
-            ui.add_sized([w, 14.0], egui::Label::new(RichText::new(title).small().weak()));
+            ui.add_sized(
+                [w, 14.0],
+                egui::Label::new(RichText::new(title).size(10.5).weak()).halign(egui::Align::Center),
+            );
         })
         .response
         .rect;
@@ -1715,9 +1736,15 @@ fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(8.0);
 }
 
-/// A large two-line ribbon button.
-fn big(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add(egui::Button::new(label).min_size(egui::vec2(58.0, RIBBON_H - 18.0)))
+fn panel_title(ui: &mut egui::Ui, icon: Icon, title: &str) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+    icons::paint(
+        ui.painter(),
+        egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(16.0)),
+        icon,
+        ui.visuals().text_color(),
+    );
+    ui.label(RichText::new(title).strong());
 }
 
 impl eframe::App for BeamerApp {
@@ -1795,13 +1822,18 @@ impl eframe::App for BeamerApp {
                 .show(ui, |ui| {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Slides").strong());
+                        ui.set_min_height(28.0);
+                        panel_title(ui, Icon::Layout, "Slides");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("+").on_hover_text("New slide (⇧⌘N)").clicked() {
+                            if icons::small(ui, Icon::NewSlide, "")
+                                .on_hover_text("New slide (⇧⌘N)")
+                                .clicked()
+                            {
                                 ed.new_slide();
                             }
                         });
                     });
+                    ui.separator();
                     slides_panel::slides_ui(ui, ed, &mut sv);
                 });
         }
@@ -1813,9 +1845,13 @@ impl eframe::App for BeamerApp {
                 .show(ui, |ui| {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Format").strong());
+                        ui.set_min_height(28.0);
+                        panel_title(ui, Icon::Pane, "Format");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("Close").clicked() {
+                            if icons::small(ui, Icon::Close, "")
+                                .on_hover_text("Close format pane")
+                                .clicked()
+                            {
                                 self.show_format_pane = false;
                             }
                         });

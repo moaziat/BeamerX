@@ -7,6 +7,7 @@ use crate::assets::AssetStore;
 use crate::commands::{Command, MergeKey};
 use crate::document::{Color, MAX_FONT_SIZE, MIN_FONT_SIZE, ObjectKind, Rect, ShapeKind, TextAlign};
 use crate::math::MathService;
+use crate::ui::icons::{self, Icon};
 use egui::{Color32, DragValue, RichText, Ui};
 
 /// Colour button with theme colours, suggestions, recent colours and a
@@ -71,7 +72,7 @@ fn slide_format(ui: &mut Ui, ed: &mut Editor) {
                 Some(MergeKey::Background(sid)),
             );
         }
-        if ui.button("Apply to All").clicked() {
+        if icons::small(ui, Icon::Background, "Apply to All").clicked() {
             ed.apply_background_to_all();
         }
     });
@@ -129,16 +130,33 @@ fn single(ui: &mut Ui, ed: &mut Editor, assets: &AssetStore) {
             ui.horizontal(|ui| {
                 font_size_edit(ui, &mut t.font_size);
                 color_edit(ui, &mut t.color);
-                ui.toggle_value(&mut t.bold, RichText::new("B").strong());
-                ui.toggle_value(&mut t.italic, RichText::new("I").italics());
+                if icons::text_toggle(ui, RichText::new("B").strong(), t.bold).clicked() {
+                    t.bold = !t.bold;
+                }
+                if icons::text_toggle(ui, RichText::new("I").italics(), t.italic).clicked() {
+                    t.italic = !t.italic;
+                }
             });
             section(ui, "PARAGRAPH");
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut t.align, TextAlign::Left, "Left");
-                ui.selectable_value(&mut t.align, TextAlign::Center, "Center");
-                ui.selectable_value(&mut t.align, TextAlign::Right, "Right");
+                for (align, icon, tip) in [
+                    (TextAlign::Left, Icon::AlignLeft, "Align left"),
+                    (TextAlign::Center, Icon::AlignCenter, "Align center"),
+                    (TextAlign::Right, Icon::AlignRight, "Align right"),
+                ] {
+                    if icons::small_toggle(ui, icon, "", t.align == align)
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        t.align = align;
+                    }
+                }
                 let mut list = t.para(0).list != crate::document::ListKind::None;
-                if ui.toggle_value(&mut list, "• Bullets").changed() {
+                if icons::small_toggle(ui, Icon::Bullets, "", list)
+                    .on_hover_text("Bullets")
+                    .clicked()
+                {
+                    list = !list;
                     let n = t.line_count();
                     let kind = if list {
                         crate::document::ListKind::Bullet
@@ -168,7 +186,7 @@ fn single(ui: &mut Ui, ed: &mut Editor, assets: &AssetStore) {
                         ))
                         .small(),
                     );
-                    if ui.button("Reset aspect ratio").clicked() && m.width > 0 {
+                    if icons::small(ui, Icon::Fit, "Reset aspect ratio").clicked() && m.width > 0 {
                         rect.h = rect.w * m.height as f32 / m.width as f32;
                     }
                 }
@@ -202,13 +220,16 @@ fn single(ui: &mut Ui, ed: &mut Editor, assets: &AssetStore) {
                 });
             } else {
                 ui.horizontal(|ui| {
-                    if ui.selectable_label(s.kind == ShapeKind::Line, "Line").clicked() {
+                    if icons::small_toggle(ui, Icon::Line, "Line", s.kind == ShapeKind::Line).clicked() {
                         s.kind = ShapeKind::Line;
                     }
-                    if ui.selectable_label(s.kind == ShapeKind::Arrow, "Arrow").clicked() {
+                    if icons::small_toggle(ui, Icon::Arrow, "Arrow", s.kind == ShapeKind::Arrow).clicked() {
                         s.kind = ShapeKind::Arrow;
                     }
-                    if ui.button("Reverse direction").clicked() {
+                    if icons::small(ui, Icon::Arrow, "Reverse")
+                        .on_hover_text("Reverse direction")
+                        .clicked()
+                    {
                         s.reversed = !s.reversed;
                     }
                 });
@@ -236,28 +257,28 @@ fn arrange(ui: &mut Ui, ed: &mut Editor) {
         },
     );
     ui.horizontal_wrapped(|ui| {
-        for (label, how) in [
-            ("Left", Align::Left),
-            ("Center", Align::HCenter),
-            ("Right", Align::Right),
-            ("Top", Align::Top),
-            ("Middle", Align::VCenter),
-            ("Bottom", Align::Bottom),
+        for (label, icon, how) in [
+            ("Left", Icon::AlignLeft, Align::Left),
+            ("Center", Icon::AlignCenter, Align::HCenter),
+            ("Right", Icon::AlignRight, Align::Right),
+            ("Top", Icon::AlignTop, Align::Top),
+            ("Middle", Icon::AlignMiddle, Align::VCenter),
+            ("Bottom", Icon::AlignBottom, Align::Bottom),
         ] {
-            if ui.small_button(label).clicked() {
+            if icons::small(ui, icon, label).clicked() {
                 ed.align(how);
             }
         }
     });
     section(ui, "ORDER");
     ui.horizontal_wrapped(|ui| {
-        for (label, how) in [
-            ("Bring to Front", ZOrder::Front),
-            ("Forward", ZOrder::Forward),
-            ("Backward", ZOrder::Backward),
-            ("Send to Back", ZOrder::Back),
+        for (label, icon, how) in [
+            ("Bring to Front", Icon::Front, ZOrder::Front),
+            ("Forward", Icon::Front, ZOrder::Forward),
+            ("Backward", Icon::Back, ZOrder::Backward),
+            ("Send to Back", Icon::Back, ZOrder::Back),
         ] {
-            if ui.small_button(label).clicked() {
+            if icons::small(ui, icon, label).clicked() {
                 ed.z_order(how);
             }
         }
@@ -306,7 +327,7 @@ pub fn properties_window(ctx: &egui::Context, open: &mut bool, ed: &mut Editor, 
                     ui.colored_label(Color32::from_rgb(200, 60, 40), crate::math::NO_ENGINE);
                 }
             }
-            if ui.small_button("Retry math that failed").clicked() {
+            if icons::small(ui, Icon::Math, "Retry failed math").clicked() {
                 math.retry_failed();
             }
         });

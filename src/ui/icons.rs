@@ -31,6 +31,9 @@ pub enum Icon {
     AlignLeft,
     AlignCenter,
     AlignRight,
+    AlignTop,
+    AlignMiddle,
+    AlignBottom,
     Front,
     Back,
     ZoomIn,
@@ -42,6 +45,7 @@ pub enum Icon {
     Properties,
     Pane,
     Background,
+    Close,
 }
 
 /// Paint `icon` inside `r` (square-ish) with colour `c`.
@@ -206,6 +210,21 @@ pub fn paint(p: &Painter, r: Rect, icon: Icon, c: Color32) {
                 line(at(x0, y), at(x0 + len, y));
             }
         }
+        Icon::AlignTop | Icon::AlignMiddle | Icon::AlignBottom => {
+            let y = match icon {
+                Icon::AlignTop => 0.16,
+                Icon::AlignMiddle => 0.5,
+                _ => 0.84,
+            };
+            line(at(0.08, y), at(0.92, y));
+            let (y0, y1) = match icon {
+                Icon::AlignTop => (y + 0.12, y + 0.48),
+                Icon::AlignMiddle => (y - 0.18, y + 0.18),
+                _ => (y - 0.48, y - 0.12),
+            };
+            p.rect_stroke(rect(0.18, y0, 0.4, y1), 1.0, st, egui::StrokeKind::Middle);
+            p.rect_stroke(rect(0.6, y0, 0.82, y1), 1.0, st, egui::StrokeKind::Middle);
+        }
         Icon::Front | Icon::Back => {
             let (back, front) = (rect(0.1, 0.1, 0.62, 0.62), rect(0.38, 0.38, 0.9, 0.9));
             if icon == Icon::Front {
@@ -265,6 +284,10 @@ pub fn paint(p: &Painter, r: Rect, icon: Icon, c: Color32) {
             p.rect_filled(rect(0.08, 0.16, 0.92, 0.84), 2.0, c.gamma_multiply(0.3));
             p.rect_stroke(rect(0.08, 0.16, 0.92, 0.84), 2.0, st, egui::StrokeKind::Middle);
         }
+        Icon::Close => {
+            line(at(0.22, 0.22), at(0.78, 0.78));
+            line(at(0.78, 0.22), at(0.22, 0.78));
+        }
     }
 }
 
@@ -293,13 +316,73 @@ fn fg(ui: &Ui) -> Color32 {
     }
 }
 
+fn accessible_name(icon: Icon) -> &'static str {
+    match icon {
+        Icon::Paste => "Paste",
+        Icon::Cut => "Cut",
+        Icon::Copy => "Copy",
+        Icon::NewSlide => "New slide",
+        Icon::Layout => "Layout",
+        Icon::Duplicate => "Duplicate",
+        Icon::Delete => "Delete",
+        Icon::TextBox => "Text box",
+        Icon::Picture => "Picture",
+        Icon::Rectangle => "Rectangle",
+        Icon::Oval => "Oval",
+        Icon::Line => "Line",
+        Icon::Arrow => "Arrow",
+        Icon::Math => "Math",
+        Icon::Present => "Present",
+        Icon::Undo => "Undo",
+        Icon::Redo => "Redo",
+        Icon::Bullets => "Bullets",
+        Icon::Numbering => "Numbering",
+        Icon::Outdent => "Outdent",
+        Icon::Indent => "Indent",
+        Icon::AlignLeft => "Align left",
+        Icon::AlignCenter => "Align center",
+        Icon::AlignRight => "Align right",
+        Icon::AlignTop => "Align top",
+        Icon::AlignMiddle => "Align middle",
+        Icon::AlignBottom => "Align bottom",
+        Icon::Front => "Bring forward",
+        Icon::Back => "Send backward",
+        Icon::ZoomIn => "Zoom in",
+        Icon::ZoomOut => "Zoom out",
+        Icon::Fit => "Fit",
+        Icon::FontColor => "Font color",
+        Icon::Fill => "Fill",
+        Icon::Outline => "Outline",
+        Icon::Properties => "Properties",
+        Icon::Pane => "Pane",
+        Icon::Background => "Background",
+        Icon::Close => "Close",
+    }
+}
+
+fn button_info(resp: &Response, ui: &Ui, label: &str, selected: Option<bool>) {
+    resp.widget_info(|| match selected {
+        Some(selected) => egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, label),
+        None => egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label),
+    });
+}
+
 /// Large ribbon button: icon above a (possibly two-line) label.
 pub fn big(ui: &mut Ui, icon: Icon, label: &str) -> Response {
-    big_with(ui, icon, label, None)
+    big_impl(ui, icon, label, None, None)
+}
+
+/// Large button that shows a selected state.
+pub fn big_toggle(ui: &mut Ui, icon: Icon, label: &str, selected: bool) -> Response {
+    big_impl(ui, icon, label, None, Some(selected))
 }
 
 /// Large button with an optional colour bar under the icon.
 pub fn big_with(ui: &mut Ui, icon: Icon, label: &str, bar: Option<Color32>) -> Response {
+    big_impl(ui, icon, label, bar, None)
+}
+
+fn big_impl(ui: &mut Ui, icon: Icon, label: &str, bar: Option<Color32>, selected: Option<bool>) -> Response {
     let font = FontId::proportional(11.5);
     let width = label
         .lines()
@@ -313,7 +396,7 @@ pub fn big_with(ui: &mut Ui, icon: Icon, label: &str, bar: Option<Color32>) -> R
         + 12.0;
     let (r, resp) = ui.allocate_exact_size(vec2(width, 58.0), Sense::click());
     if ui.is_rect_visible(r) {
-        if let Some(bg) = flat_bg(ui, &resp, false) {
+        if let Some(bg) = flat_bg(ui, &resp, selected.unwrap_or(false)) {
             ui.painter().rect_filled(r, 5.0, bg);
         }
         let c = fg(ui);
@@ -333,16 +416,26 @@ pub fn big_with(ui: &mut Ui, icon: Icon, label: &str, bar: Option<Color32>) -> R
             y += 12.5;
         }
     }
+    button_info(&resp, ui, label, selected);
     resp
 }
 
 /// Small ribbon button: icon followed by a label.
 pub fn small(ui: &mut Ui, icon: Icon, label: &str) -> Response {
-    small_toggle(ui, icon, label, false)
+    small_impl(ui, icon, label, None, None)
+}
+
+/// Compact high-emphasis action, used for the primary Present button.
+pub fn small_accent(ui: &mut Ui, icon: Icon, label: &str, accent: Color32) -> Response {
+    small_impl(ui, icon, label, None, Some(accent))
 }
 
 /// Small button that shows a selected state.
 pub fn small_toggle(ui: &mut Ui, icon: Icon, label: &str, selected: bool) -> Response {
+    small_impl(ui, icon, label, Some(selected), None)
+}
+
+fn small_impl(ui: &mut Ui, icon: Icon, label: &str, selected: Option<bool>, accent: Option<Color32>) -> Response {
     let font = FontId::proportional(12.0);
     let tw = if label.is_empty() {
         0.0
@@ -353,42 +446,64 @@ pub fn small_toggle(ui: &mut Ui, icon: Icon, label: &str, selected: bool) -> Res
             .x
             + 6.0
     };
-    let (r, resp) = ui.allocate_exact_size(vec2(26.0 + tw, 24.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(28.0 + tw, 26.0), Sense::click());
     if ui.is_rect_visible(r) {
-        if let Some(bg) = flat_bg(ui, &resp, selected) {
+        let bg = accent.map(|c| {
+            if resp.is_pointer_button_down_on() {
+                c.gamma_multiply(0.82)
+            } else if resp.hovered() {
+                c.gamma_multiply(1.08)
+            } else {
+                c
+            }
+        });
+        if let Some(bg) = bg.or_else(|| flat_bg(ui, &resp, selected.unwrap_or(false))) {
             ui.painter().rect_filled(r, 4.0, bg);
         }
-        let c = fg(ui);
+        let c = accent.map_or_else(|| fg(ui), |_| Color32::WHITE);
         paint(
             ui.painter(),
-            Rect::from_center_size(pos2(r.left() + 13.0, r.center().y), Vec2::splat(15.0)),
+            Rect::from_center_size(pos2(r.left() + 14.0, r.center().y), Vec2::splat(15.0)),
             icon,
             c,
         );
         if !label.is_empty() {
             ui.painter()
-                .text(pos2(r.left() + 25.0, r.center().y), Align2::LEFT_CENTER, label, font, c);
+                .text(pos2(r.left() + 27.0, r.center().y), Align2::LEFT_CENTER, label, font, c);
         }
     }
+    let accessible = if label.is_empty() { accessible_name(icon) } else { label };
+    button_info(&resp, ui, accessible, selected);
     resp
 }
 
 /// Text-only flat toggle (B, I, style names) in the ribbon's look.
 pub fn text_toggle(ui: &mut Ui, text: egui::RichText, selected: bool) -> Response {
+    text_impl(ui, text, Some(selected))
+}
+
+/// Text-only flat button in the ribbon's look.
+pub fn text(ui: &mut Ui, text: egui::RichText) -> Response {
+    text_impl(ui, text, None)
+}
+
+fn text_impl(ui: &mut Ui, text: egui::RichText, selected: Option<bool>) -> Response {
+    let accessible = text.text().to_owned();
     let galley = egui::WidgetText::from(text).into_galley(
         ui,
         Some(egui::TextWrapMode::Extend),
         f32::INFINITY,
         egui::TextStyle::Button,
     );
-    let size = vec2(galley.size().x + 14.0, 24.0);
+    let size = vec2(galley.size().x + 14.0, 26.0);
     let (r, resp) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(r) {
-        if let Some(bg) = flat_bg(ui, &resp, selected) {
+        if let Some(bg) = flat_bg(ui, &resp, selected.unwrap_or(false)) {
             ui.painter().rect_filled(r, 4.0, bg);
         }
         let pos = r.center() - galley.size() * 0.5;
         ui.painter().galley(pos, galley, fg(ui));
     }
+    button_info(&resp, ui, &accessible, selected);
     resp
 }
