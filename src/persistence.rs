@@ -26,7 +26,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 pub const FORMAT_NAME: &str = "beamerx";
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 pub const MIMETYPE: &str = "application/x-beamerx";
 pub const EXTENSION: &str = "beamerx";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -156,6 +156,12 @@ fn migrate(mut v: Value) -> Result<Value> {
             document.entry("sections").or_insert_with(|| Value::Array(Vec::new()));
         }
         ver = 4;
+    }
+    if ver == 4 {
+        if let Some(meta) = v.pointer_mut("/document/meta").and_then(Value::as_object_mut) {
+            meta.entry("theme").or_insert_with(|| Value::String("default".into()));
+        }
+        ver = 5;
     }
     v["format_version"] = ver.into();
     Ok(v)
@@ -328,6 +334,7 @@ mod tests {
     fn sample(store: &AssetStore) -> SaveSnapshot {
         let meta = AssetStore::ingest_bytes(store.dir(), &png_bytes(32, 16, 7), "plot.png").unwrap();
         let mut doc = Document::new();
+        doc.meta.theme = BeamerTheme::Berlin;
         let sid = doc.slides[0].id;
         let ids: Vec<ObjectId> = (0..4).map(|_| doc.alloc_object_id()).collect();
         let s = doc.slide_mut(sid).unwrap();
@@ -523,6 +530,15 @@ mod tests {
         assert_eq!(doc.meta.title, "Legacy v3 deck");
         assert_eq!(doc.slides.len(), 1);
         assert!(doc.sections.is_empty());
+        assert!(assets.is_empty());
+    }
+
+    #[test]
+    fn frozen_v4_fixture_gets_default_theme() {
+        let bytes = include_bytes!("../tests/fixtures/project_v4.json");
+        let (doc, assets) = parse_manifest(bytes).unwrap();
+        assert_eq!(doc.meta.title, "Legacy v4 deck");
+        assert_eq!(doc.meta.theme, BeamerTheme::Default);
         assert!(assets.is_empty());
     }
 }

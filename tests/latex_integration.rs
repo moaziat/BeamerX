@@ -29,6 +29,7 @@ fn png(w: u32, h: u32) -> Vec<u8> {
 fn sample_deck(store: &AssetStore) -> SaveSnapshot {
     let meta = AssetStore::ingest_bytes(store.dir(), &png(64, 48), "my plot (final).png").unwrap();
     let mut doc = Document::new();
+    doc.meta.theme = BeamerTheme::Madrid;
     doc.meta.title = "Integration & tests: 100% {braces}".into();
     doc.meta.author = "A. Tester".into();
     doc.meta.preamble = "\\newcommand{\\R}{\\mathbb{R}}\n\\usetheme{default}".into();
@@ -132,6 +133,13 @@ fn sample_deck(store: &AssetStore) -> SaveSnapshot {
         Rect::new(220.0, 210.0, 60.0, 30.0),
         ObjectKind::Shape(rect),
     );
+    for (kind, rect) in [
+        (ShapeKind::Cube, Rect::new(10.0, 205.0, 48.0, 38.0)),
+        (ShapeKind::Cylinder, Rect::new(67.0, 205.0, 34.0, 40.0)),
+        (ShapeKind::Bevel, Rect::new(110.0, 210.0, 32.0, 30.0)),
+    ] {
+        add(&mut doc, s1, rect, ObjectKind::Shape(Shape::new(kind)));
+    }
     // An empty second slide with a coloured background.
     let s2 = doc.alloc_slide_id();
     doc.slides.push(Slide {

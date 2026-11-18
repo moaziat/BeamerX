@@ -103,7 +103,7 @@ A ZIP container: `mimetype`, a versioned `project.json` (document + asset
 manifest) and the **original image bytes** under `assets/<sha256>.<ext>`
 (stored, not recompressed, de-duplicated by content hash). No base64 in JSON.
 Saves are atomic (temp file → fsync → rename); a failed save never damages the
-previous file. Format 4 adds named slide sections; format 3 stores character
+previous file. Format 5 adds a persistent stock Beamer theme; format 4 adds named slide sections; format 3 stores character
 formats as spans and paragraph formats (style, list, level) per line. Older files are migrated on open:
 format-1 equation objects become text boxes containing `$\displaystyle …$`,
 and format-2 box-wide bullets become per-paragraph bullets. Loading validates structure, bounds sizes, never uses archive
@@ -132,6 +132,11 @@ placed absolutely with TikZ, so positions and sizes match the editor exactly.
   wrapping.
 * Math is serif (`\usefonttheme[onlymath]{serif}`), as in the preview.
 * Colours with transparency are exported with TikZ opacity.
+* The Design ribbon includes stock Beamer themes (Default, Madrid, Boadilla,
+  CambridgeUS, Berlin and Copenhagen); the editor previews their structural
+  chrome and export emits the matching `\usetheme{…}` command.
+* Shape drawing includes flat primitives plus native vector Cube, Cylinder
+  and Bevel shapes; no bitmap assets or extra runtime dependencies are used.
 * The exported `main.tex` compiles with Tectonic in one command, or with
   XeLaTeX/LuaLaTeX in two passes (`latexmk -xelatex`). pdfLaTeX works for
   documents without non-Latin text, best effort.

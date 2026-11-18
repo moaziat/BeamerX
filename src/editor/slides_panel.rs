@@ -169,7 +169,16 @@ pub fn slides_ui(ui: &mut Ui, ed: &mut Editor, sv: &mut Services) {
                     origin: t_rect.min,
                     scale: thumb.x / SLIDE_W,
                 };
-                renderer::paint_slide(&painter, &view, &ed.doc.slides[i], sv, PaintOpts::default());
+                renderer::paint_slide(
+                    &painter,
+                    &view,
+                    &ed.doc.slides[i],
+                    sv,
+                    PaintOpts {
+                        theme: ed.doc.meta.theme,
+                        ..Default::default()
+                    },
+                );
                 let stroke = if i == ed.current {
                     Stroke::new(2.5, Color32::from_rgb(10, 132, 255))
                 } else {

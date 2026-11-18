@@ -627,6 +627,9 @@ pub enum ShapeKind {
     Ellipse,
     Triangle,
     Diamond,
+    Cube,
+    Cylinder,
+    Bevel,
     Line,
     Arrow,
 }
@@ -634,6 +637,16 @@ pub enum ShapeKind {
 impl ShapeKind {
     pub fn is_linear(self) -> bool {
         matches!(self, ShapeKind::Line | ShapeKind::Arrow)
+    }
+
+    /// Comfortable click-to-insert dimensions in slide-space points.
+    pub fn default_size(self) -> (f32, f32) {
+        match self {
+            ShapeKind::Ellipse => (60.0, 60.0),
+            ShapeKind::Cube => (80.0, 70.0),
+            ShapeKind::Cylinder => (68.0, 76.0),
+            _ => (90.0, 55.0),
+        }
     }
 }
 
@@ -668,7 +681,10 @@ impl Shape {
             | ShapeKind::RoundedRectangle
             | ShapeKind::Ellipse
             | ShapeKind::Triangle
-            | ShapeKind::Diamond => Some(Color::LIGHT_FILL),
+            | ShapeKind::Diamond
+            | ShapeKind::Cube
+            | ShapeKind::Cylinder
+            | ShapeKind::Bevel => Some(Color::LIGHT_FILL),
             _ => None,
         };
         Self {
@@ -726,6 +742,9 @@ impl ObjectKind {
                 ShapeKind::Ellipse => "Ellipse",
                 ShapeKind::Triangle => "Triangle",
                 ShapeKind::Diamond => "Diamond",
+                ShapeKind::Cube => "Cube",
+                ShapeKind::Cylinder => "Cylinder",
+                ShapeKind::Bevel => "Bevel",
                 ShapeKind::Line => "Line",
                 ShapeKind::Arrow => "Arrow",
             },
@@ -801,12 +820,54 @@ impl Slide {
     }
 }
 
+/// Stock presentation themes shipped with Beamer. The editor previews their
+/// structural chrome; exported TeX uses the corresponding `\usetheme` name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeamerTheme {
+    #[default]
+    Default,
+    Madrid,
+    Boadilla,
+    CambridgeUs,
+    Berlin,
+    Copenhagen,
+}
+
+impl BeamerTheme {
+    pub const ALL: [Self; 6] = [
+        Self::Default,
+        Self::Madrid,
+        Self::Boadilla,
+        Self::CambridgeUs,
+        Self::Berlin,
+        Self::Copenhagen,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::Madrid => "Madrid",
+            Self::Boadilla => "Boadilla",
+            Self::CambridgeUs => "CambridgeUS",
+            Self::Berlin => "Berlin",
+            Self::Copenhagen => "Copenhagen",
+        }
+    }
+
+    pub fn latex_name(self) -> Option<&'static str> {
+        (self != Self::Default).then(|| self.label())
+    }
+}
+
 /// Document-level metadata and settings that are not tied to one slide.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct DocMeta {
     pub title: String,
     #[serde(default)]
     pub author: String,
+    #[serde(default)]
+    pub theme: BeamerTheme,
     /// Extra LaTeX preamble (e.g. `\newcommand` macros). Used both for
     /// equation previews and for the exported Beamer file.
     #[serde(default)]

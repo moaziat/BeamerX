@@ -1,7 +1,7 @@
 //! Application shell: panels, menus, dialogs and background jobs.
 
 use crate::assets::{AssetMeta, AssetStore};
-use crate::document::{ImageRef, Object, ObjectKind, Rect, SLIDE_H, SLIDE_W, SlideId};
+use crate::document::{BeamerTheme, ImageRef, Object, ObjectKind, Rect, SLIDE_H, SLIDE_W, SlideId};
 use crate::editor::canvas::{self, CanvasRequest, CanvasState};
 use crate::editor::layouts::Layout;
 use crate::editor::text_edit::{self, Caret};
@@ -783,7 +783,10 @@ impl BeamerApp {
                 let r = self.ed.default_rect(100.0, 0.0);
                 s.set_endpoints((r.x, r.y), (r.right(), r.y))
             }
-            ObjectKind::Shape(_) => self.ed.default_rect(90.0, 55.0),
+            ObjectKind::Shape(s) => {
+                let (w, h) = s.kind.default_size();
+                self.ed.default_rect(w, h)
+            }
             ObjectKind::Text(t) => self
                 .ed
                 .default_rect(240.0, t.font_size * crate::document::typeset::LINE_SPREAD),
@@ -906,7 +909,10 @@ impl BeamerApp {
                 &view,
                 &self.ed.doc.slides[index],
                 &mut sv,
-                PaintOpts::default(),
+                PaintOpts {
+                    theme: self.ed.doc.meta.theme,
+                    ..Default::default()
+                },
             );
             clicked = resp.clicked();
         });
@@ -1266,6 +1272,9 @@ impl BeamerApp {
                         ("Oval", Icon::Oval, ShapeKind::Ellipse),
                         ("Triangle", Icon::Triangle, ShapeKind::Triangle),
                         ("Diamond", Icon::Diamond, ShapeKind::Diamond),
+                        ("Cube", Icon::Cube, ShapeKind::Cube),
+                        ("Cylinder", Icon::Cylinder, ShapeKind::Cylinder),
+                        ("Bevel", Icon::Bevel, ShapeKind::Bevel),
                         ("Line", Icon::Line, ShapeKind::Line),
                         ("Arrow", Icon::Arrow, ShapeKind::Arrow),
                     ]
@@ -1375,6 +1384,17 @@ impl BeamerApp {
     }
 
     fn tab_design(&mut self, ui: &mut egui::Ui) {
+        group(ui, "Themes", |ui| {
+            let selected = self.ed.doc.meta.theme;
+            for theme in BeamerTheme::ALL {
+                if theme_swatch(ui, theme, selected == theme).clicked() {
+                    let before = self.ed.doc.meta.clone();
+                    let mut after = before.clone();
+                    after.theme = theme;
+                    self.ed.exec(Command::SetMeta { before, after });
+                }
+            }
+        });
         group(ui, "Background", |ui| {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
@@ -1723,6 +1743,45 @@ impl BeamerApp {
 
 const RIBBON_ACCENT: Color32 = Color32::from_rgb(196, 62, 28);
 const RIBBON_H: f32 = 74.0;
+
+/// Small, live theme card used by the Design ribbon. It shares the same
+/// vector chrome painter as the canvas and thumbnails.
+fn theme_swatch(ui: &mut egui::Ui, theme: BeamerTheme, selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(76.0, 58.0), egui::Sense::click());
+    let visuals = ui.style().interact_selectable(&response, selected);
+    let painter = ui.painter_at(rect);
+    if selected || response.hovered() {
+        painter.rect_filled(rect, 3.0, visuals.weak_bg_fill);
+        painter.rect_stroke(rect, 3.0, visuals.bg_stroke, egui::StrokeKind::Inside);
+    }
+    let slide_w = 66.0;
+    let slide_h = slide_w * SLIDE_H / SLIDE_W;
+    let slide = egui::Rect::from_min_size(
+        egui::pos2(rect.center().x - slide_w * 0.5, rect.top() + 4.0),
+        egui::vec2(slide_w, slide_h),
+    );
+    painter.rect_filled(slide, 1.0, Color32::WHITE);
+    let view = View {
+        origin: slide.min,
+        scale: slide_w / SLIDE_W,
+    };
+    renderer::paint_theme_chrome(&painter, &view, theme);
+    painter.rect_stroke(
+        slide,
+        1.0,
+        egui::Stroke::new(0.6, Color32::from_gray(135)),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        egui::pos2(rect.center().x, rect.bottom() - 3.0),
+        egui::Align2::CENTER_BOTTOM,
+        theme.label(),
+        egui::FontId::proportional(10.0),
+        visuals.text_color(),
+    );
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, theme.label()));
+    response.on_hover_text(format!("Use the {} Beamer theme", theme.label()))
+}
 
 /// A labelled ribbon group with a separator after it.
 fn group(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {

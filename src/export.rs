@@ -8,8 +8,8 @@
 
 use crate::assets::AssetMeta;
 use crate::document::{
-    AssetId, CharFmt, Color, Document, ListKind, Object, ObjectKind, ParaFmt, ParaStyle, Shape, ShapeKind, Slide,
-    TextAlign, TextBox, typeset,
+    AssetId, BeamerTheme, CharFmt, Color, Document, ListKind, Object, ObjectKind, ParaFmt, ParaStyle, Shape, ShapeKind,
+    Slide, TextAlign, TextBox, typeset,
 };
 use crate::latex::{CompileOptions, Toolchain};
 use crate::persistence::SaveSnapshot;
@@ -337,12 +337,26 @@ fn shape_cmd(o: &Object, s: &Shape) -> String {
             opts.push(format!("draw opacity={a}"));
         }
     }
+    let stroke_opts = opts.clone();
+    let shaded_opts = |mix: &str| {
+        let mut face = stroke_opts.clone();
+        if let Some(f) = s.fill {
+            face.push(format!("fill={}{}", color_name(f), mix));
+            if let Some(a) = opacity(f) {
+                face.push(format!("fill opacity={a}"));
+            }
+        }
+        face.join(",")
+    };
     match s.kind {
         ShapeKind::Rectangle
         | ShapeKind::RoundedRectangle
         | ShapeKind::Ellipse
         | ShapeKind::Triangle
-        | ShapeKind::Diamond => {
+        | ShapeKind::Diamond
+        | ShapeKind::Cube
+        | ShapeKind::Cylinder
+        | ShapeKind::Bevel => {
             if let Some(f) = s.fill {
                 opts.push(format!("fill={}", color_name(f)));
                 if let Some(a) = opacity(f) {
@@ -398,6 +412,57 @@ fn shape_cmd(o: &Object, s: &Shape) -> String {
                     bp(r.x),
                     bp(r.center().1)
                 ),
+                ShapeKind::Cube => {
+                    let d = (r.w * 0.24).min(r.h * 0.28);
+                    let top = shaded_opts("!70!white");
+                    let side = shaded_opts("!75!black");
+                    format!(
+                        "\\path[{o}] ({x},{yd}) -- ({rd},{yd}) -- ({rd},{b}) -- ({x},{b}) -- cycle;\n\\path[{top}] ({x},{yd}) -- ({xd},{y}) -- ({rr},{y}) -- ({rd},{yd}) -- cycle;\n\\path[{side}] ({rd},{yd}) -- ({rr},{y}) -- ({rr},{bd}) -- ({rd},{b}) -- cycle;\n",
+                        x = bp(r.x),
+                        y = bp(r.y),
+                        rr = bp(r.right()),
+                        b = bp(r.bottom()),
+                        xd = bp(r.x + d),
+                        yd = bp(r.y + d),
+                        rd = bp(r.right() - d),
+                        bd = bp(r.bottom() - d),
+                    )
+                }
+                ShapeKind::Cylinder => {
+                    let cap = (r.h * 0.24).min(r.w * 0.3);
+                    let cy_top = r.y + cap * 0.5;
+                    let cy_bottom = r.bottom() - cap * 0.5;
+                    let top = shaded_opts("!70!white");
+                    let bottom = shaded_opts("!78!black");
+                    format!(
+                        "\\path[{o}] ({x},{yt}) rectangle ({rr},{yb});\n\\path[{bottom}] ({cx},{yb}) ellipse [x radius={rx}bp,y radius={ry}bp];\n\\path[{top}] ({cx},{yt}) ellipse [x radius={rx}bp,y radius={ry}bp];\n",
+                        x = bp(r.x),
+                        rr = bp(r.right()),
+                        cx = bp(r.center().0),
+                        yt = bp(cy_top),
+                        yb = bp(cy_bottom),
+                        rx = bp((r.w * 0.5).max(0.01)),
+                        ry = bp((cap * 0.5).max(0.01)),
+                    )
+                }
+                ShapeKind::Bevel => {
+                    let d = (r.w.min(r.h) * 0.2).max(0.5);
+                    let top = shaded_opts("!70!white");
+                    let right = shaded_opts("!75!black");
+                    let bottom = shaded_opts("!62!black");
+                    let left = shaded_opts("!90!black");
+                    format!(
+                        "\\path[{o}] ({ix},{iy}) rectangle ({ir},{ib});\n\\path[{top}] ({x},{y}) -- ({rr},{y}) -- ({ir},{iy}) -- ({ix},{iy}) -- cycle;\n\\path[{right}] ({rr},{y}) -- ({rr},{b}) -- ({ir},{ib}) -- ({ir},{iy}) -- cycle;\n\\path[{bottom}] ({rr},{b}) -- ({x},{b}) -- ({ix},{ib}) -- ({ir},{ib}) -- cycle;\n\\path[{left}] ({x},{b}) -- ({x},{y}) -- ({ix},{iy}) -- ({ix},{ib}) -- cycle;\n",
+                        x = bp(r.x),
+                        y = bp(r.y),
+                        rr = bp(r.right()),
+                        b = bp(r.bottom()),
+                        ix = bp(r.x + d),
+                        iy = bp(r.y + d),
+                        ir = bp(r.right() - d),
+                        ib = bp(r.bottom() - d),
+                    )
+                }
                 _ => unreachable!("linear shapes are handled below"),
             }
         }
@@ -453,6 +518,68 @@ fn collect_colors(doc: &Document) -> BTreeSet<(u8, u8, u8)> {
     set
 }
 
+/// Prefer the genuine stock theme when the TeX distribution includes it.
+/// Tectonic's compact bundle may omit optional `beamertheme*.sty` files, so
+/// every built-in choice also has a core-Beamer fallback that cannot require
+/// a package download.
+fn theme_setup(theme: BeamerTheme) -> String {
+    let Some(name) = theme.latex_name() else {
+        return String::new();
+    };
+    let (primary, secondary, footer, headline, footline) = match theme {
+        BeamerTheme::Madrid => ((48, 93, 150), (217, 226, 243), (35, 55, 96), (10.0, 0.0), 8.0),
+        BeamerTheme::Boadilla => ((48, 93, 150), (235, 238, 244), (235, 238, 244), (2.0, 0.0), 9.0),
+        BeamerTheme::CambridgeUs => ((154, 39, 45), (225, 205, 190), (92, 30, 35), (11.0, 3.0), 8.0),
+        BeamerTheme::Berlin => ((35, 55, 96), (217, 226, 243), (35, 55, 96), (14.0, 3.0), 7.0),
+        BeamerTheme::Copenhagen => ((35, 55, 96), (48, 93, 150), (35, 55, 96), (12.0, 6.0), 0.0),
+        BeamerTheme::Default => unreachable!("handled above"),
+    };
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "\\IfFileExists{{beamertheme{name}.sty}}{{\\usetheme{{{name}}}}}{{%"
+    );
+    let _ = writeln!(
+        out,
+        "\\definecolor{{bxthemePrimary}}{{RGB}}{{{},{},{}}}",
+        primary.0, primary.1, primary.2
+    );
+    let _ = writeln!(
+        out,
+        "\\definecolor{{bxthemeSecondary}}{{RGB}}{{{},{},{}}}",
+        secondary.0, secondary.1, secondary.2
+    );
+    let _ = writeln!(
+        out,
+        "\\definecolor{{bxthemeFooter}}{{RGB}}{{{},{},{}}}",
+        footer.0, footer.1, footer.2
+    );
+    let _ = writeln!(
+        out,
+        "\\setbeamertemplate{{headline}}{{\\leavevmode\\vbox{{\\hbox{{\\color{{bxthemePrimary}}\\rule{{\\paperwidth}}{{{}bp}}}}{} }} }}",
+        bp(headline.0),
+        if headline.1 > 0.0 {
+            format!(
+                "\\hbox{{\\color{{bxthemeSecondary}}\\rule{{\\paperwidth}}{{{}bp}}}}",
+                bp(headline.1)
+            )
+        } else {
+            String::new()
+        }
+    );
+    if footline > 0.0 {
+        let _ = writeln!(
+            out,
+            "\\setbeamertemplate{{footline}}{{\\leavevmode\\hbox{{\\color{{bxthemeFooter}}\\rule{{\\paperwidth}}{{{}bp}}}}}}",
+            bp(footline)
+        );
+    } else {
+        out.push_str("\\setbeamertemplate{footline}{}\n");
+    }
+    out.push_str("}\n");
+    out
+}
+
 fn slide_body(slide: &Slide, assets: &HashMap<AssetId, String>) -> String {
     let mut out = String::new();
     for o in &slide.objects {
@@ -484,6 +611,7 @@ pub fn generate_tex(doc: &Document, assets: &HashMap<AssetId, String>) -> String
     t.push_str("\\documentclass[aspectratio=169,11pt]{beamer}\n");
     t.push_str(MATH_PACKAGES);
     t.push_str("\\usepackage{graphicx}\n\\usepackage{tikz}\n\\usetikzlibrary{arrows.meta}\n");
+    t.push_str(&theme_setup(doc.meta.theme));
     t.push_str("\\usefonttheme[onlymath]{serif}\n");
     // Inline math is never split across lines (the editor keeps each
     // formula on one line too).
@@ -523,7 +651,11 @@ pub fn generate_tex(doc: &Document, assets: &HashMap<AssetId, String>) -> String
             "\\setbeamercolor{{background canvas}}{{bg={}}}",
             color_name(slide.background)
         );
-        t.push_str("\\begin{frame}[plain]\n");
+        if doc.meta.theme.latex_name().is_some() {
+            t.push_str("\\begin{frame}\n");
+        } else {
+            t.push_str("\\begin{frame}[plain]\n");
+        }
         if let Some(title) = slide_title(slide) {
             // Slide titles become the PDF outline.
             let _ = writeln!(
@@ -732,6 +864,9 @@ mod tests {
         let rounded = object(ShapeKind::RoundedRectangle);
         let triangle = object(ShapeKind::Triangle);
         let diamond = object(ShapeKind::Diamond);
+        let cube = object(ShapeKind::Cube);
+        let cylinder = object(ShapeKind::Cylinder);
+        let bevel = object(ShapeKind::Bevel);
         let ObjectKind::Shape(rounded_shape) = &rounded.kind else {
             unreachable!()
         };
@@ -741,11 +876,23 @@ mod tests {
         let ObjectKind::Shape(diamond_shape) = &diamond.kind else {
             unreachable!()
         };
+        let ObjectKind::Shape(cube_shape) = &cube.kind else {
+            unreachable!()
+        };
+        let ObjectKind::Shape(cylinder_shape) = &cylinder.kind else {
+            unreachable!()
+        };
+        let ObjectKind::Shape(bevel_shape) = &bevel.kind else {
+            unreachable!()
+        };
         assert!(shape_cmd(&rounded, rounded_shape).contains("rounded corners="));
         assert_eq!(shape_cmd(&triangle, triangle_shape).matches(" -- ").count(), 3);
         assert_eq!(shape_cmd(&diamond, diamond_shape).matches(" -- ").count(), 4);
         assert!(shape_cmd(&triangle, triangle_shape).contains("-- cycle"));
         assert!(shape_cmd(&diamond, diamond_shape).contains("-- cycle"));
+        assert_eq!(shape_cmd(&cube, cube_shape).matches("\\path[").count(), 3);
+        assert!(shape_cmd(&cylinder, cylinder_shape).contains("ellipse [x radius="));
+        assert_eq!(shape_cmd(&bevel, bevel_shape).matches("\\path[").count(), 5);
     }
 
     #[test]
@@ -814,5 +961,15 @@ mod tests {
         let second_frame = tex.find("% ---------------- slide 2").unwrap();
         assert!(first_frame < section && section < second_frame);
         assert!(doc.section_before(first).is_none());
+    }
+
+    #[test]
+    fn stock_theme_exports_real_beamer_theme_and_non_plain_frame() {
+        let mut doc = Document::new();
+        doc.meta.theme = crate::document::BeamerTheme::CambridgeUs;
+        let tex = generate_tex(&doc, &HashMap::new());
+        assert!(tex.contains("\\usetheme{CambridgeUS}"));
+        assert!(tex.contains("\\begin{frame}\n"));
+        assert!(!tex.contains("\\begin{frame}[plain]"));
     }
 }

@@ -8,7 +8,9 @@ pub mod text_layout;
 pub mod textures;
 
 use crate::assets::AssetStore;
-use crate::document::{Color, ImageRef, Object, ObjectId, ObjectKind, Rect, Shape, ShapeKind, Slide, TextBox};
+use crate::document::{
+    BeamerTheme, Color, ImageRef, Object, ObjectId, ObjectKind, Rect, Shape, ShapeKind, Slide, TextBox,
+};
 use crate::export::arrow_head;
 use crate::math::MathService;
 use egui::{Color32, FontFamily, FontId, Painter, Pos2, Stroke, StrokeKind, Vec2, pos2, vec2};
@@ -132,11 +134,14 @@ pub struct PaintOpts {
     pub skip: Option<ObjectId>,
     /// Show editor-only hints (placeholders, loading states).
     pub editor_hints: bool,
+    /// Presentation chrome to preview around slide content.
+    pub theme: BeamerTheme,
 }
 
 pub fn paint_slide(p: &Painter, view: &View, slide: &Slide, sv: &mut Services, opts: PaintOpts) {
     let area = view.slide_rect();
     p.rect_filled(area, 0.0, c32(slide.background));
+    paint_theme_chrome(p, view, opts.theme);
     let clip = p.clip_rect().intersect(area);
     let p = p.with_clip_rect(clip);
     for o in &slide.objects {
@@ -150,6 +155,103 @@ pub fn paint_slide(p: &Painter, view: &View, slide: &Slide, sv: &mut Services, o
             continue;
         }
         paint_object(&p, view, o, sv, opts);
+    }
+}
+
+/// Paint a lightweight structural preview of a stock Beamer theme. This uses
+/// only a handful of vector primitives, so thumbnails and canvas rendering
+/// remain allocation-free apart from Berlin's tiny navigation markers.
+pub fn paint_theme_chrome(p: &Painter, view: &View, theme: BeamerTheme) {
+    let r = view.slide_rect();
+    let h = |bp: f32| bp * view.scale;
+    let navy = Color32::from_rgb(35, 55, 96);
+    let blue = Color32::from_rgb(48, 93, 150);
+    let pale_blue = Color32::from_rgb(217, 226, 243);
+    let red = Color32::from_rgb(154, 39, 45);
+    match theme {
+        BeamerTheme::Default => {}
+        BeamerTheme::Madrid => {
+            p.rect_filled(
+                egui::Rect::from_min_max(r.min, pos2(r.right(), r.top() + h(10.0))),
+                0.0,
+                blue,
+            );
+            p.rect_filled(
+                egui::Rect::from_min_max(pos2(r.left(), r.bottom() - h(8.0)), r.max),
+                0.0,
+                navy,
+            );
+        }
+        BeamerTheme::Boadilla => {
+            p.rect_filled(
+                egui::Rect::from_min_max(r.min, pos2(r.right(), r.top() + h(2.0))),
+                0.0,
+                blue,
+            );
+            p.rect_filled(
+                egui::Rect::from_min_max(pos2(r.left(), r.bottom() - h(9.0)), r.max),
+                0.0,
+                Color32::from_rgb(235, 238, 244),
+            );
+            p.rect_filled(
+                egui::Rect::from_min_max(
+                    pos2(r.left(), r.bottom() - h(9.0)),
+                    pos2(r.right(), r.bottom() - h(7.8)),
+                ),
+                0.0,
+                blue,
+            );
+        }
+        BeamerTheme::CambridgeUs => {
+            p.rect_filled(
+                egui::Rect::from_min_max(r.min, pos2(r.right(), r.top() + h(11.0))),
+                0.0,
+                red,
+            );
+            p.rect_filled(
+                egui::Rect::from_min_max(pos2(r.left(), r.top() + h(11.0)), pos2(r.right(), r.top() + h(14.0))),
+                0.0,
+                Color32::from_rgb(225, 205, 190),
+            );
+            p.rect_filled(
+                egui::Rect::from_min_max(pos2(r.left(), r.bottom() - h(8.0)), r.max),
+                0.0,
+                Color32::from_rgb(92, 30, 35),
+            );
+        }
+        BeamerTheme::Berlin => {
+            p.rect_filled(
+                egui::Rect::from_min_max(r.min, pos2(r.right(), r.top() + h(14.0))),
+                0.0,
+                navy,
+            );
+            p.rect_filled(
+                egui::Rect::from_min_max(pos2(r.left(), r.top() + h(14.0)), pos2(r.right(), r.top() + h(17.0))),
+                0.0,
+                pale_blue,
+            );
+            let cy = r.top() + h(11.0);
+            for i in 0..5 {
+                p.circle_filled(pos2(r.left() + h(8.0 + i as f32 * 5.0), cy), h(1.15), Color32::WHITE);
+            }
+            p.rect_filled(
+                egui::Rect::from_min_max(pos2(r.left(), r.bottom() - h(7.0)), r.max),
+                0.0,
+                navy,
+            );
+        }
+        BeamerTheme::Copenhagen => {
+            p.rect_filled(
+                egui::Rect::from_min_max(r.min, pos2(r.right(), r.top() + h(12.0))),
+                0.0,
+                navy,
+            );
+            p.rect_filled(
+                egui::Rect::from_min_max(pos2(r.left(), r.top() + h(12.0)), pos2(r.right(), r.top() + h(18.0))),
+                0.0,
+                blue,
+            );
+        }
     }
 }
 
@@ -342,6 +444,101 @@ pub fn paint_shape(p: &Painter, view: &View, r: &Rect, s: &Shape) {
                 s.fill.map(c32).unwrap_or(Color32::TRANSPARENT),
                 stroke,
             ));
+        }
+        ShapeKind::Cube => {
+            let d = view.rect(r);
+            let depth = (d.width() * 0.24).min(d.height() * 0.28);
+            let fill = s.fill.map(c32).unwrap_or(Color32::TRANSPARENT);
+            let front = vec![
+                pos2(d.left(), d.top() + depth),
+                pos2(d.right() - depth, d.top() + depth),
+                pos2(d.right() - depth, d.bottom()),
+                d.left_bottom(),
+            ];
+            let top = vec![
+                pos2(d.left(), d.top() + depth),
+                pos2(d.left() + depth, d.top()),
+                d.right_top(),
+                pos2(d.right() - depth, d.top() + depth),
+            ];
+            let side = vec![
+                pos2(d.right() - depth, d.top() + depth),
+                d.right_top(),
+                pos2(d.right(), d.bottom() - depth),
+                pos2(d.right() - depth, d.bottom()),
+            ];
+            p.add(egui::Shape::convex_polygon(front, fill, stroke));
+            p.add(egui::Shape::convex_polygon(top, fill.gamma_multiply(1.2), stroke));
+            p.add(egui::Shape::convex_polygon(side, fill.gamma_multiply(0.72), stroke));
+        }
+        ShapeKind::Cylinder => {
+            let d = view.rect(r);
+            let cap = (d.height() * 0.24).min(d.width() * 0.3);
+            let radius = vec2(d.width() * 0.5, cap * 0.5);
+            let top = pos2(d.center().x, d.top() + cap * 0.5);
+            let bottom = pos2(d.center().x, d.bottom() - cap * 0.5);
+            let fill = s.fill.map(c32).unwrap_or(Color32::TRANSPARENT);
+            p.rect_filled(
+                egui::Rect::from_min_max(pos2(d.left(), top.y), pos2(d.right(), bottom.y)),
+                0.0,
+                fill,
+            );
+            p.add(egui::Shape::ellipse_filled(bottom, radius, fill.gamma_multiply(0.78)));
+            p.add(egui::Shape::ellipse_filled(top, radius, fill.gamma_multiply(1.18)));
+            if s.stroke_width > 0.0 {
+                p.line_segment([pos2(d.left(), top.y), pos2(d.left(), bottom.y)], stroke);
+                p.line_segment([pos2(d.right(), top.y), pos2(d.right(), bottom.y)], stroke);
+                p.add(egui::Shape::ellipse_stroke(top, radius, stroke));
+                p.add(egui::Shape::ellipse_stroke(bottom, radius, stroke));
+            }
+        }
+        ShapeKind::Bevel => {
+            let d = view.rect(r);
+            let inset = (d.width().min(d.height()) * 0.2).max(1.0);
+            let inner = d.shrink(inset);
+            let fill = s.fill.map(c32).unwrap_or(Color32::TRANSPARENT);
+            let top = vec![d.left_top(), d.right_top(), inner.right_top(), inner.left_top()];
+            let right = vec![d.right_top(), d.right_bottom(), inner.right_bottom(), inner.right_top()];
+            let bottom = vec![
+                d.right_bottom(),
+                d.left_bottom(),
+                inner.left_bottom(),
+                inner.right_bottom(),
+            ];
+            let left = vec![d.left_bottom(), d.left_top(), inner.left_top(), inner.left_bottom()];
+            p.add(egui::Shape::convex_polygon(
+                top,
+                fill.gamma_multiply(1.22),
+                Stroke::NONE,
+            ));
+            p.add(egui::Shape::convex_polygon(
+                right,
+                fill.gamma_multiply(0.72),
+                Stroke::NONE,
+            ));
+            p.add(egui::Shape::convex_polygon(
+                bottom,
+                fill.gamma_multiply(0.62),
+                Stroke::NONE,
+            ));
+            p.add(egui::Shape::convex_polygon(
+                left,
+                fill.gamma_multiply(0.92),
+                Stroke::NONE,
+            ));
+            p.rect_filled(inner, 0.0, fill);
+            if s.stroke_width > 0.0 {
+                p.rect_stroke(d, 0.0, stroke, StrokeKind::Middle);
+                p.rect_stroke(inner, 0.0, stroke, StrokeKind::Middle);
+                for (a, b) in [
+                    (d.left_top(), inner.left_top()),
+                    (d.right_top(), inner.right_top()),
+                    (d.right_bottom(), inner.right_bottom()),
+                    (d.left_bottom(), inner.left_bottom()),
+                ] {
+                    p.line_segment([a, b], stroke);
+                }
+            }
         }
         ShapeKind::Line | ShapeKind::Arrow => {
             if s.stroke_width <= 0.0 {

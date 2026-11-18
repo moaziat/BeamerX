@@ -1,0 +1,22 @@
+{
+  "format": "beamerx",
+  "format_version": 4,
+  "app_version": "0.1.0",
+  "document": {
+    "meta": {
+      "title": "Legacy v4 deck",
+      "author": "",
+      "preamble": ""
+    },
+    "slides": [
+      {
+        "id": 1,
+        "objects": [],
+        "background": "#ffffff"
+      }
+    ],
+    "sections": [],
+    "next_id": 2
+  },
+  "assets": []
+}

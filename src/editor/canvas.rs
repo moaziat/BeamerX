@@ -378,6 +378,7 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
         PaintOpts {
             skip: editing,
             editor_hints: true,
+            theme: ed.doc.meta.theme,
         },
     );
     let heights = sv.text_heights.take().unwrap_or_default();
@@ -989,11 +990,7 @@ fn create_object(
         (ObjectKind::Shape(s), false) if s.kind.is_linear() => s.set_endpoints(start, (start.0 + 80.0, start.1)),
         (ObjectKind::Shape(_), true) => Rect::from_points(start, end),
         (ObjectKind::Shape(Shape { kind: k, .. }), false) => {
-            let (w, h) = if *k == crate::document::ShapeKind::Ellipse {
-                (60.0, 60.0)
-            } else {
-                (90.0, 55.0)
-            };
+            let (w, h) = k.default_size();
             Rect::new(start.0 - w * 0.5, start.1 - h * 0.5, w, h)
         }
         (ObjectKind::Text(t), d) => {

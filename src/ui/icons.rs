@@ -23,6 +23,9 @@ pub enum Icon {
     Oval,
     Triangle,
     Diamond,
+    Cube,
+    Cylinder,
+    Bevel,
     Line,
     Arrow,
     Math,
@@ -168,6 +171,45 @@ pub fn paint(p: &Painter, r: Rect, icon: Icon, c: Color32) {
                 Color32::TRANSPARENT,
                 st,
             ));
+        }
+        Icon::Cube => {
+            p.add(Shape::convex_polygon(
+                vec![at(0.12, 0.32), at(0.42, 0.12), at(0.88, 0.3), at(0.58, 0.5)],
+                c.gamma_multiply(0.12),
+                st,
+            ));
+            p.add(Shape::convex_polygon(
+                vec![at(0.12, 0.32), at(0.58, 0.5), at(0.58, 0.9), at(0.12, 0.7)],
+                Color32::TRANSPARENT,
+                st,
+            ));
+            p.add(Shape::convex_polygon(
+                vec![at(0.58, 0.5), at(0.88, 0.3), at(0.88, 0.7), at(0.58, 0.9)],
+                c.gamma_multiply(0.2),
+                st,
+            ));
+        }
+        Icon::Cylinder => {
+            p.rect_stroke(rect(0.18, 0.25, 0.82, 0.75), 0.0, st, egui::StrokeKind::Middle);
+            p.add(Shape::ellipse_filled(
+                at(0.5, 0.25),
+                vec2(s * 0.32, s * 0.14),
+                c.gamma_multiply(0.1),
+            ));
+            p.add(Shape::ellipse_stroke(at(0.5, 0.25), vec2(s * 0.32, s * 0.14), st));
+            p.add(Shape::ellipse_stroke(at(0.5, 0.75), vec2(s * 0.32, s * 0.14), st));
+        }
+        Icon::Bevel => {
+            p.rect_stroke(rect(0.1, 0.18, 0.9, 0.82), 0.0, st, egui::StrokeKind::Middle);
+            p.rect_stroke(rect(0.27, 0.34, 0.73, 0.66), 0.0, st, egui::StrokeKind::Middle);
+            for (a, b) in [
+                (at(0.1, 0.18), at(0.27, 0.34)),
+                (at(0.9, 0.18), at(0.73, 0.34)),
+                (at(0.9, 0.82), at(0.73, 0.66)),
+                (at(0.1, 0.82), at(0.27, 0.66)),
+            ] {
+                line(a, b);
+            }
         }
         Icon::Line => {
             line(at(0.14, 0.84), at(0.86, 0.16));
@@ -371,6 +413,9 @@ fn accessible_name(icon: Icon) -> &'static str {
         Icon::Oval => "Oval",
         Icon::Triangle => "Triangle",
         Icon::Diamond => "Diamond",
+        Icon::Cube => "Cube",
+        Icon::Cylinder => "Cylinder",
+        Icon::Bevel => "Bevel",
         Icon::Line => "Line",
         Icon::Arrow => "Arrow",
         Icon::Math => "Math",
