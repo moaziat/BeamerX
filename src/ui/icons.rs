@@ -16,8 +16,12 @@ pub enum Icon {
     Delete,
     TextBox,
     Picture,
+    Shapes,
     Rectangle,
+    RoundedRectangle,
     Oval,
+    Triangle,
+    Diamond,
     Line,
     Arrow,
     Math,
@@ -126,11 +130,37 @@ pub fn paint(p: &Painter, r: Rect, icon: Icon, c: Color32) {
             ));
             p.circle_filled(at(0.7, 0.34), s * 0.07, c);
         }
+        Icon::Shapes => {
+            p.rect_stroke(rect(0.08, 0.12, 0.56, 0.5), 1.5, st, egui::StrokeKind::Middle);
+            p.circle_stroke(at(0.68, 0.68), s * 0.22, st);
+            p.add(Shape::convex_polygon(
+                vec![at(0.48, 0.22), at(0.82, 0.22), at(0.65, 0.02)],
+                c.gamma_multiply(0.4),
+                st,
+            ));
+        }
         Icon::Rectangle => {
             p.rect_stroke(rect(0.12, 0.24, 0.88, 0.76), 1.5, st, egui::StrokeKind::Middle);
         }
+        Icon::RoundedRectangle => {
+            p.rect_stroke(rect(0.1, 0.22, 0.9, 0.78), s * 0.14, st, egui::StrokeKind::Middle);
+        }
         Icon::Oval => {
             p.add(Shape::ellipse_stroke(r.center(), vec2(s * 0.38, s * 0.27), st));
+        }
+        Icon::Triangle => {
+            p.add(Shape::convex_polygon(
+                vec![at(0.5, 0.1), at(0.9, 0.84), at(0.1, 0.84)],
+                Color32::TRANSPARENT,
+                st,
+            ));
+        }
+        Icon::Diamond => {
+            p.add(Shape::convex_polygon(
+                vec![at(0.5, 0.08), at(0.92, 0.5), at(0.5, 0.92), at(0.08, 0.5)],
+                Color32::TRANSPARENT,
+                st,
+            ));
         }
         Icon::Line => {
             line(at(0.14, 0.84), at(0.86, 0.16));
@@ -327,8 +357,12 @@ fn accessible_name(icon: Icon) -> &'static str {
         Icon::Delete => "Delete",
         Icon::TextBox => "Text box",
         Icon::Picture => "Picture",
+        Icon::Shapes => "Shapes",
         Icon::Rectangle => "Rectangle",
+        Icon::RoundedRectangle => "Rounded rectangle",
         Icon::Oval => "Oval",
+        Icon::Triangle => "Triangle",
+        Icon::Diamond => "Diamond",
         Icon::Line => "Line",
         Icon::Arrow => "Arrow",
         Icon::Math => "Math",

@@ -301,13 +301,18 @@ pub fn paint_shape(p: &Painter, view: &View, r: &Rect, s: &Shape) {
         Stroke::NONE
     };
     match s.kind {
-        ShapeKind::Rectangle => {
+        ShapeKind::Rectangle | ShapeKind::RoundedRectangle => {
             let dest = view.rect(r);
+            let radius = if s.kind == ShapeKind::RoundedRectangle {
+                (r.w.min(r.h) * 0.18).min(7.0) * view.scale
+            } else {
+                0.0
+            };
             if let Some(f) = s.fill {
-                p.rect_filled(dest, 0.0, c32(f));
+                p.rect_filled(dest, radius, c32(f));
             }
             if s.stroke_width > 0.0 {
-                p.rect_stroke(dest, 0.0, stroke, StrokeKind::Middle);
+                p.rect_stroke(dest, radius, stroke, StrokeKind::Middle);
             }
         }
         ShapeKind::Ellipse => {
@@ -319,6 +324,24 @@ pub fn paint_shape(p: &Painter, view: &View, r: &Rect, s: &Shape) {
             if s.stroke_width > 0.0 {
                 p.add(egui::Shape::ellipse_stroke(dest.center(), radius, stroke));
             }
+        }
+        ShapeKind::Triangle | ShapeKind::Diamond => {
+            let dest = view.rect(r);
+            let points = if s.kind == ShapeKind::Triangle {
+                vec![dest.center_top(), dest.right_bottom(), dest.left_bottom()]
+            } else {
+                vec![
+                    dest.center_top(),
+                    dest.right_center(),
+                    dest.center_bottom(),
+                    dest.left_center(),
+                ]
+            };
+            p.add(egui::Shape::convex_polygon(
+                points,
+                s.fill.map(c32).unwrap_or(Color32::TRANSPARENT),
+                stroke,
+            ));
         }
         ShapeKind::Line | ShapeKind::Arrow => {
             if s.stroke_width <= 0.0 {

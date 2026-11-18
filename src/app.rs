@@ -1036,18 +1036,10 @@ impl BeamerApp {
         self.font_group(ui);
         self.paragraph_group(ui);
         group(ui, "Drawing", |ui| {
-            egui::Grid::new("draw-tools").spacing([2.0, 2.0]).show(ui, |ui| {
-                self.tool_button(ui, "Text Box", Tool::Text);
-                self.tool_button(ui, "Rectangle", Tool::Shape(ShapeKind::Rectangle));
-                self.tool_button(ui, "Oval", Tool::Shape(ShapeKind::Ellipse));
-                ui.end_row();
-                self.tool_button(ui, "Line", Tool::Shape(ShapeKind::Line));
-                self.tool_button(ui, "Arrow", Tool::Shape(ShapeKind::Arrow));
-                if icons::small(ui, Icon::Picture, "Picture…").clicked() {
-                    *insert_image = true;
-                }
-                ui.end_row();
-            });
+            self.shape_gallery(ui, false);
+            if icons::big(ui, Icon::Picture, "Picture…").clicked() {
+                *insert_image = true;
+            }
             self.shape_style(ui);
         });
         group(ui, "Math", |ui| {
@@ -1068,31 +1060,6 @@ impl BeamerApp {
                 }
             });
         });
-    }
-
-    fn tool_button(&mut self, ui: &mut egui::Ui, label: &str, tool: Tool) {
-        let icon = match tool {
-            Tool::Text => Icon::TextBox,
-            Tool::Shape(ShapeKind::Rectangle) => Icon::Rectangle,
-            Tool::Shape(ShapeKind::Ellipse) => Icon::Oval,
-            Tool::Shape(ShapeKind::Line) => Icon::Line,
-            Tool::Shape(ShapeKind::Arrow) => Icon::Arrow,
-            Tool::Select => Icon::Properties,
-        };
-        let tip = match tool {
-            Tool::Text => "Text box (T): click on the slide, then type. Use $…$ for math.",
-            Tool::Shape(ShapeKind::Rectangle) => "Rectangle (R): click or drag on the slide",
-            Tool::Shape(ShapeKind::Ellipse) => "Oval (O): click or drag on the slide",
-            Tool::Shape(ShapeKind::Line) => "Line (L): drag on the slide",
-            Tool::Shape(ShapeKind::Arrow) => "Arrow (A): drag on the slide",
-            Tool::Select => "Select (V)",
-        };
-        if icons::small_toggle(ui, icon, label, self.ed.tool == tool)
-            .on_hover_text(tip)
-            .clicked()
-        {
-            self.ed.set_tool(if self.ed.tool == tool { Tool::Select } else { tool });
-        }
     }
 
     /// "New Slide" (Title and Content) plus a layout menu, as in PowerPoint.
@@ -1270,6 +1237,55 @@ impl BeamerApp {
         });
     }
 
+    /// Compact PowerPoint-style gallery. Home selects a drawing tool; Insert
+    /// places a shape immediately at the centre of the current slide.
+    fn shape_gallery(&mut self, ui: &mut egui::Ui, insert: bool) {
+        let active = !insert && matches!(self.ed.tool, Tool::Shape(_));
+        let button = icons::big_toggle(ui, Icon::Shapes, "Shapes", active).on_hover_text(if insert {
+            "Insert a shape"
+        } else {
+            "Choose a shape, then click or drag on the slide"
+        });
+        let mut chosen = None;
+        egui::Popup::menu(&button).show(|ui| {
+            ui.set_min_width(250.0);
+            crate::ui::heading(ui, "SHAPES");
+            egui::Grid::new(if insert { "insert-shapes" } else { "draw-shapes" })
+                .num_columns(2)
+                .spacing([8.0, 4.0])
+                .show(ui, |ui| {
+                    for (i, (label, icon, kind)) in [
+                        ("Rectangle", Icon::Rectangle, ShapeKind::Rectangle),
+                        ("Rounded rectangle", Icon::RoundedRectangle, ShapeKind::RoundedRectangle),
+                        ("Oval", Icon::Oval, ShapeKind::Ellipse),
+                        ("Triangle", Icon::Triangle, ShapeKind::Triangle),
+                        ("Diamond", Icon::Diamond, ShapeKind::Diamond),
+                        ("Line", Icon::Line, ShapeKind::Line),
+                        ("Arrow", Icon::Arrow, ShapeKind::Arrow),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        if icons::small(ui, icon, label).clicked() {
+                            chosen = Some(kind);
+                            ui.close();
+                        }
+                        if i % 2 == 1 {
+                            ui.end_row();
+                        }
+                    }
+                    ui.end_row();
+                });
+        });
+        if let Some(kind) = chosen {
+            if insert {
+                self.insert_kind(Tool::Shape(kind));
+            } else {
+                self.ed.set_tool(Tool::Shape(kind));
+            }
+        }
+    }
+
     fn shape_style(&mut self, ui: &mut egui::Ui) {
         let shape = self
             .ed
@@ -1343,16 +1359,7 @@ impl BeamerApp {
             }
         });
         group(ui, "Shapes", |ui| {
-            for (label, icon, k) in [
-                ("Rectangle", Icon::Rectangle, ShapeKind::Rectangle),
-                ("Oval", Icon::Oval, ShapeKind::Ellipse),
-                ("Line", Icon::Line, ShapeKind::Line),
-                ("Arrow", Icon::Arrow, ShapeKind::Arrow),
-            ] {
-                if icons::big(ui, icon, label).clicked() {
-                    self.insert_kind(Tool::Shape(k));
-                }
-            }
+            self.shape_gallery(ui, true);
         });
         ui.label(
             RichText::new("Math is written like LaTeX inside text:\n$E = mc^2$ inline  ·  $$\\int_0^1 f$$ centred  ·  \\$ for a dollar sign")

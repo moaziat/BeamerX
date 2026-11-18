@@ -76,8 +76,9 @@ optional pane with exact position, size, colours and picture details.
   objects (hold `⌘` to disable, `⇧` to constrain); arrow keys nudge (`⇧` = 10 pt).
 * **Images** — drag PNG/JPEG files from Finder onto the slide, or *Insert ›
   Picture…*.
-* **Shapes** — rectangle, oval, line and arrow (*Home › Drawing* or *Insert*);
-  fill and outline in *Home › Drawing*.
+* **Shapes** — rectangle, rounded rectangle, oval, triangle, diamond, line and
+  arrow from the *Home › Drawing* or *Insert › Shapes* gallery; fill and
+  outline stay available in *Home › Drawing*.
 * **Edit** — shift-click / marquee for multi-selection; align and order in
   *Arrange*; `⌘C`/`⌘X`/`⌘V`/`⌘D`; `⌫` deletes; undo/redo `⌘Z`/`⇧⌘Z`.
 * **Slides** — *Home › New Slide*, or thumbnails: click to select, drag to

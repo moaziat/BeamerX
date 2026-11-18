@@ -338,7 +338,11 @@ fn shape_cmd(o: &Object, s: &Shape) -> String {
         }
     }
     match s.kind {
-        ShapeKind::Rectangle | ShapeKind::Ellipse => {
+        ShapeKind::Rectangle
+        | ShapeKind::RoundedRectangle
+        | ShapeKind::Ellipse
+        | ShapeKind::Triangle
+        | ShapeKind::Diamond => {
             if let Some(f) = s.fill {
                 opts.push(format!("fill={}", color_name(f)));
                 if let Some(a) = opacity(f) {
@@ -349,23 +353,52 @@ fn shape_cmd(o: &Object, s: &Shape) -> String {
                 return String::new();
             }
             let o = opts.join(",");
-            if s.kind == ShapeKind::Rectangle {
-                format!(
-                    "\\path[{o}] ({},{}) rectangle ({},{});\n",
-                    bp(r.x),
+            match s.kind {
+                ShapeKind::Rectangle | ShapeKind::RoundedRectangle => {
+                    let rounded = if s.kind == ShapeKind::RoundedRectangle {
+                        format!(",rounded corners={}bp", bp((r.w.min(r.h) * 0.18).min(7.0)))
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "\\path[{o}{rounded}] ({},{}) rectangle ({},{});\n",
+                        bp(r.x),
+                        bp(r.y),
+                        bp(r.right()),
+                        bp(r.bottom())
+                    )
+                }
+                ShapeKind::Ellipse => {
+                    let (cx, cy) = r.center();
+                    format!(
+                        "\\path[{o}] ({},{}) ellipse [x radius={}bp,y radius={}bp];\n",
+                        bp(cx),
+                        bp(cy),
+                        bp((r.w * 0.5).max(0.01)),
+                        bp((r.h * 0.5).max(0.01))
+                    )
+                }
+                ShapeKind::Triangle => format!(
+                    "\\path[{o}] ({},{}) -- ({},{}) -- ({},{}) -- cycle;\n",
+                    bp(r.center().0),
                     bp(r.y),
                     bp(r.right()),
+                    bp(r.bottom()),
+                    bp(r.x),
                     bp(r.bottom())
-                )
-            } else {
-                let (cx, cy) = r.center();
-                format!(
-                    "\\path[{o}] ({},{}) ellipse [x radius={}bp,y radius={}bp];\n",
-                    bp(cx),
-                    bp(cy),
-                    bp((r.w * 0.5).max(0.01)),
-                    bp((r.h * 0.5).max(0.01))
-                )
+                ),
+                ShapeKind::Diamond => format!(
+                    "\\path[{o}] ({},{}) -- ({},{}) -- ({},{}) -- ({},{}) -- cycle;\n",
+                    bp(r.center().0),
+                    bp(r.y),
+                    bp(r.right()),
+                    bp(r.center().1),
+                    bp(r.center().0),
+                    bp(r.bottom()),
+                    bp(r.x),
+                    bp(r.center().1)
+                ),
+                _ => unreachable!("linear shapes are handled below"),
             }
         }
         ShapeKind::Line | ShapeKind::Arrow => {
@@ -684,6 +717,32 @@ mod tests {
         assert_eq!(bp(1.25), "1.25");
         assert_eq!(bp(-0.00001), "0");
         assert_eq!(bp(453.5433), "453.5433");
+    }
+
+    #[test]
+    fn filled_shape_variants_export_as_closed_paths() {
+        let object = |kind| Object {
+            id: ObjectId(1),
+            rect: Rect::new(10.0, 20.0, 100.0, 60.0),
+            kind: ObjectKind::Shape(Shape::new(kind)),
+        };
+        let rounded = object(ShapeKind::RoundedRectangle);
+        let triangle = object(ShapeKind::Triangle);
+        let diamond = object(ShapeKind::Diamond);
+        let ObjectKind::Shape(rounded_shape) = &rounded.kind else {
+            unreachable!()
+        };
+        let ObjectKind::Shape(triangle_shape) = &triangle.kind else {
+            unreachable!()
+        };
+        let ObjectKind::Shape(diamond_shape) = &diamond.kind else {
+            unreachable!()
+        };
+        assert!(shape_cmd(&rounded, rounded_shape).contains("rounded corners="));
+        assert_eq!(shape_cmd(&triangle, triangle_shape).matches(" -- ").count(), 3);
+        assert_eq!(shape_cmd(&diamond, diamond_shape).matches(" -- ").count(), 4);
+        assert!(shape_cmd(&triangle, triangle_shape).contains("-- cycle"));
+        assert!(shape_cmd(&diamond, diamond_shape).contains("-- cycle"));
     }
 
     #[test]

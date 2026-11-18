@@ -623,7 +623,10 @@ pub struct ImageRef {
 #[serde(rename_all = "snake_case")]
 pub enum ShapeKind {
     Rectangle,
+    RoundedRectangle,
     Ellipse,
+    Triangle,
+    Diamond,
     Line,
     Arrow,
 }
@@ -661,7 +664,11 @@ pub struct Shape {
 impl Shape {
     pub fn new(kind: ShapeKind) -> Self {
         let fill = match kind {
-            ShapeKind::Rectangle | ShapeKind::Ellipse => Some(Color::LIGHT_FILL),
+            ShapeKind::Rectangle
+            | ShapeKind::RoundedRectangle
+            | ShapeKind::Ellipse
+            | ShapeKind::Triangle
+            | ShapeKind::Diamond => Some(Color::LIGHT_FILL),
             _ => None,
         };
         Self {
@@ -715,7 +722,10 @@ impl ObjectKind {
             ObjectKind::Image(_) => "Image",
             ObjectKind::Shape(s) => match s.kind {
                 ShapeKind::Rectangle => "Rectangle",
+                ShapeKind::RoundedRectangle => "Rounded Rectangle",
                 ShapeKind::Ellipse => "Ellipse",
+                ShapeKind::Triangle => "Triangle",
+                ShapeKind::Diamond => "Diamond",
                 ShapeKind::Line => "Line",
                 ShapeKind::Arrow => "Arrow",
             },
