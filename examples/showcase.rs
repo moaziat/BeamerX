@@ -113,6 +113,68 @@ fn main() -> anyhow::Result<()> {
     });
     doc.slide_mut(s1).unwrap().objects = objs;
 
+    // Slide 2: dash styles and line ends.
+    let s2 = doc.alloc_slide_id();
+    let mut objs2 = Vec::new();
+    objs2.push(Object {
+        id: doc.alloc_object_id(),
+        rect: Rect::new(24.0, 14.0, 405.0, 30.0),
+        kind: ObjectKind::Text(TextBox {
+            text: "Dashes and line ends".into(),
+            font_size: 15.0,
+            paras: vec![ParaFmt {
+                style: ParaStyle::Title,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+    });
+    for (k, dash) in DashStyle::ALL.iter().enumerate() {
+        let y = 70.0 + k as f32 * 24.0;
+        let mut line = Shape::new(ShapeKind::Line);
+        line.dash = *dash;
+        line.stroke_width = 1.5;
+        line.start_tip = LineEnd::ALL[k % LineEnd::ALL.len()];
+        line.end_tip = LineEnd::ALL[(k + 1) % LineEnd::ALL.len()];
+        let r = line.set_endpoints((30.0, y), (200.0, y));
+        objs2.push(Object {
+            id: doc.alloc_object_id(),
+            rect: r,
+            kind: ObjectKind::Shape(line),
+        });
+        objs2.push(Object {
+            id: doc.alloc_object_id(),
+            rect: Rect::new(210.0, y - 8.0, 120.0, 14.0),
+            kind: ObjectKind::Text(TextBox {
+                text: dash.label().into(),
+                font_size: 10.0,
+                ..Default::default()
+            }),
+        });
+    }
+    for (k, (kind, dash)) in [
+        (ShapeKind::Rectangle, DashStyle::Dash),
+        (ShapeKind::Ellipse, DashStyle::RoundDot),
+        (ShapeKind::Cube, DashStyle::LongDashDot),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut sh = Shape::new(kind);
+        sh.dash = dash;
+        sh.stroke_width = 2.0;
+        objs2.push(Object {
+            id: doc.alloc_object_id(),
+            rect: Rect::new(340.0, 60.0 + k as f32 * 62.0, 90.0, 50.0),
+            kind: ObjectKind::Shape(sh),
+        });
+    }
+    doc.slides.push(Slide {
+        id: s2,
+        objects: objs2,
+        background: Color::WHITE,
+    });
+
     let path = store.path_of(&meta);
     let snap = SaveSnapshot {
         doc,

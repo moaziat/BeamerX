@@ -1345,6 +1345,25 @@ impl BeamerApp {
                         let v = s.stroke_width;
                         self.ed.update_selected_shapes(12, |x| x.stroke_width = v);
                     }
+                    if let Some(d) = crate::ui::line_style::dash_menu(ui, s.dash) {
+                        self.ed.update_selected_shapes(13, |x| x.dash = d);
+                    }
+                    if s.kind.is_linear() {
+                        if let Some(t) = crate::ui::line_style::tip_menu(ui, s.start_tip, true) {
+                            self.ed.update_selected_shapes(14, |x| {
+                                if x.kind.is_linear() {
+                                    x.start_tip = t
+                                }
+                            });
+                        }
+                        if let Some(t) = crate::ui::line_style::tip_menu(ui, s.end_tip, false) {
+                            self.ed.update_selected_shapes(15, |x| {
+                                if x.kind.is_linear() {
+                                    x.end_tip = t
+                                }
+                            });
+                        }
+                    }
                 });
             });
         });

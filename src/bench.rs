@@ -424,7 +424,16 @@ impl Bench {
 
     fn tick_screenshot(&mut self, app: &mut BeamerApp, ctx: &egui::Context) {
         match self.phase {
-            Phase::Setup => self.enter(Phase::Warmup { until_idle_since: None }),
+            Phase::Setup => {
+                // Optional: BEAMERX_SHOT_SLIDE=<n> shows slide n (1-based).
+                if let Some(n) = std::env::var("BEAMERX_SHOT_SLIDE")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    app.ed.go_to_slide(n.saturating_sub(1));
+                }
+                self.enter(Phase::Warmup { until_idle_since: None })
+            }
             Phase::Warmup { .. } => {
                 if self.warmed_up(app, ctx) {
                     let out = self

@@ -3,6 +3,7 @@
 
 pub mod color_picker;
 pub mod icons;
+pub mod line_style;
 
 use egui::{Color32, CornerRadius, FontFamily, Stroke, Theme};
 use std::sync::Arc;

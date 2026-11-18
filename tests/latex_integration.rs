@@ -116,6 +116,24 @@ fn sample_deck(store: &AssetStore) -> SaveSnapshot {
             asset: AssetId("c".repeat(64)),
         }),
     );
+    // Every dash style and line end must be valid TikZ.
+    for (k, dash) in DashStyle::ALL.iter().enumerate() {
+        let mut line = Shape::new(ShapeKind::Line);
+        line.dash = *dash;
+        line.start_tip = LineEnd::ALL[k % LineEnd::ALL.len()];
+        line.end_tip = LineEnd::ALL[(k + 3) % LineEnd::ALL.len()];
+        let y = 230.0 + k as f32 * 3.0;
+        let r = line.set_endpoints((20.0, y), (140.0, y));
+        add(&mut doc, s1, r, ObjectKind::Shape(line));
+    }
+    let mut dashed = Shape::new(ShapeKind::Cube);
+    dashed.dash = DashStyle::LongDashDot;
+    add(
+        &mut doc,
+        s1,
+        Rect::new(400.0, 200.0, 40.0, 40.0),
+        ObjectKind::Shape(dashed),
+    );
     let mut arrow = Shape::new(ShapeKind::Arrow);
     let r = arrow.set_endpoints((150.0, 200.0), (280.0, 160.0));
     add(&mut doc, s1, r, ObjectKind::Shape(arrow));

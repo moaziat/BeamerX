@@ -661,6 +661,119 @@ pub enum Diagonal {
     Up,
 }
 
+/// Outline dash style (PowerPoint's "Dash type").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DashStyle {
+    #[default]
+    Solid,
+    RoundDot,
+    SquareDot,
+    Dash,
+    DashDot,
+    LongDash,
+    LongDashDot,
+}
+
+impl DashStyle {
+    pub const ALL: [DashStyle; 7] = [
+        DashStyle::Solid,
+        DashStyle::RoundDot,
+        DashStyle::SquareDot,
+        DashStyle::Dash,
+        DashStyle::DashDot,
+        DashStyle::LongDash,
+        DashStyle::LongDashDot,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DashStyle::Solid => "Solid",
+            DashStyle::RoundDot => "Round dot",
+            DashStyle::SquareDot => "Square dot",
+            DashStyle::Dash => "Dash",
+            DashStyle::DashDot => "Dash dot",
+            DashStyle::LongDash => "Long dash",
+            DashStyle::LongDashDot => "Long dash dot",
+        }
+    }
+
+    /// Dash pattern as (on, off) pairs in bp for a line of width `w`
+    /// (empty = solid). Shared by the editor and the TikZ export.
+    pub fn pattern(self, w: f32) -> Vec<(f32, f32)> {
+        let u = w.max(0.75);
+        match self {
+            DashStyle::Solid => vec![],
+            // Zero-length dashes with round caps draw dots.
+            DashStyle::RoundDot => vec![(0.0, 2.0 * u)],
+            DashStyle::SquareDot => vec![(u, u)],
+            DashStyle::Dash => vec![(4.0 * u, 3.0 * u)],
+            DashStyle::DashDot => vec![(4.0 * u, 3.0 * u), (u, 3.0 * u)],
+            DashStyle::LongDash => vec![(8.0 * u, 3.0 * u)],
+            DashStyle::LongDashDot => vec![(8.0 * u, 3.0 * u), (u, 3.0 * u)],
+        }
+    }
+
+    pub fn round_caps(self) -> bool {
+        self == DashStyle::RoundDot
+    }
+}
+
+/// Decoration at the start or end of a line (PowerPoint's arrow types).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineEnd {
+    #[default]
+    None,
+    /// Filled triangle.
+    Triangle,
+    /// Open "V" arrow.
+    Open,
+    /// Filled arrow with a notched back.
+    Stealth,
+    Diamond,
+    /// Filled dot.
+    Circle,
+    /// Perpendicular bar.
+    Bar,
+}
+
+impl LineEnd {
+    pub const ALL: [LineEnd; 7] = [
+        LineEnd::None,
+        LineEnd::Triangle,
+        LineEnd::Open,
+        LineEnd::Stealth,
+        LineEnd::Diamond,
+        LineEnd::Circle,
+        LineEnd::Bar,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LineEnd::None => "None",
+            LineEnd::Triangle => "Arrow",
+            LineEnd::Open => "Open arrow",
+            LineEnd::Stealth => "Stealth arrow",
+            LineEnd::Diamond => "Diamond",
+            LineEnd::Circle => "Oval",
+            LineEnd::Bar => "Bar",
+        }
+    }
+
+    /// (length along the line, width across it) in bp for stroke width `w`.
+    pub fn size(self, w: f32) -> (f32, f32) {
+        let len = 3.0 + 3.0 * w;
+        match self {
+            LineEnd::None => (0.0, 0.0),
+            LineEnd::Circle => (len * 0.7, len * 0.7),
+            LineEnd::Bar => (0.0, len),
+            LineEnd::Diamond => (len, len * 0.7),
+            _ => (len, len * 0.8),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Shape {
     pub kind: ShapeKind,
@@ -672,6 +785,14 @@ pub struct Shape {
     pub diagonal: Diagonal,
     #[serde(default)]
     pub reversed: bool,
+    /// Outline dash style.
+    #[serde(default)]
+    pub dash: DashStyle,
+    /// Line decorations at the start and end (lines and arrows).
+    #[serde(default)]
+    pub start_tip: LineEnd,
+    #[serde(default)]
+    pub end_tip: LineEnd,
 }
 
 impl Shape {
@@ -694,6 +815,13 @@ impl Shape {
             fill,
             diagonal: Diagonal::Down,
             reversed: false,
+            dash: DashStyle::Solid,
+            start_tip: LineEnd::None,
+            end_tip: if kind == ShapeKind::Arrow {
+                LineEnd::Triangle
+            } else {
+                LineEnd::None
+            },
         }
     }
 

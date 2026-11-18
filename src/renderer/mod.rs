@@ -9,9 +9,9 @@ pub mod textures;
 
 use crate::assets::AssetStore;
 use crate::document::{
-    BeamerTheme, Color, ImageRef, Object, ObjectId, ObjectKind, Rect, Shape, ShapeKind, Slide, TextBox,
+    BeamerTheme, Color, DashStyle, ImageRef, LineEnd, Object, ObjectId, ObjectKind, Rect, Shape, ShapeKind, Slide,
+    TextBox,
 };
-use crate::export::arrow_head;
 use crate::math::MathService;
 use egui::{Color32, FontFamily, FontId, Painter, Pos2, Stroke, StrokeKind, Vec2, pos2, vec2};
 use std::sync::Arc;
@@ -395,6 +395,246 @@ fn dashed_rect(p: &Painter, r: egui::Rect, c: Color32) {
     }
 }
 
+/// Stroke a polyline (screen points) with a dash pattern given in bp.
+/// The pattern runs continuously around corners; zero-length "on" phases
+/// draw round dots.
+pub fn stroke_path(
+    p: &Painter,
+    pts: &[Pos2],
+    closed: bool,
+    stroke: Stroke,
+    dash: DashStyle,
+    width_bp: f32,
+    scale: f32,
+) {
+    if pts.len() < 2 || stroke.width <= 0.0 {
+        return;
+    }
+    let pattern = dash.pattern(width_bp);
+    if pattern.is_empty() {
+        let shape = if closed {
+            egui::Shape::closed_line(pts.to_vec(), stroke)
+        } else {
+            egui::Shape::line(pts.to_vec(), stroke)
+        };
+        p.add(shape);
+        return;
+    }
+    let phases: Vec<(f32, bool)> = pattern
+        .iter()
+        .flat_map(|(on, off)| [(on * scale, true), (off * scale, false)])
+        .collect();
+    let mut segs: Vec<(Pos2, Pos2)> = pts.windows(2).map(|w| (w[0], w[1])).collect();
+    if closed && pts.len() > 2 {
+        segs.push((pts[pts.len() - 1], pts[0]));
+    }
+    let flush = |cur: &mut Vec<Pos2>| {
+        if cur.len() >= 2 {
+            p.add(egui::Shape::line(std::mem::take(cur), stroke));
+        }
+        cur.clear();
+    };
+    // Start "before" the first phase so the boundary logic enters it.
+    let (mut pi, mut left, mut on) = (phases.len() - 1, 0.0f32, false);
+    let mut cur: Vec<Pos2> = Vec::new();
+    for (a, b) in segs {
+        let d = b - a;
+        let len = d.length();
+        if len <= 1e-6 {
+            continue;
+        }
+        let dir = d / len;
+        let mut t = 0.0f32;
+        if on && left > 0.0 && cur.is_empty() {
+            cur.push(a);
+        }
+        loop {
+            if left <= 1e-6 {
+                if on {
+                    flush(&mut cur);
+                }
+                pi = (pi + 1) % phases.len();
+                (left, on) = phases[pi];
+                let at = a + dir * t;
+                if on {
+                    if left <= 1e-6 {
+                        if dash.round_caps() {
+                            p.circle_filled(at, stroke.width * 0.5, stroke.color);
+                        }
+                    } else {
+                        cur.push(at);
+                    }
+                }
+                continue;
+            }
+            let step = left.min(len - t);
+            t += step;
+            left -= step;
+            if on {
+                cur.push(a + dir * t);
+            }
+            if t >= len - 1e-6 {
+                break;
+            }
+        }
+    }
+    flush(&mut cur);
+}
+
+fn ellipse_points(c: Pos2, rx: f32, ry: f32, n: usize) -> Vec<Pos2> {
+    (0..n)
+        .map(|i| {
+            let a = std::f32::consts::TAU * i as f32 / n as f32;
+            pos2(c.x + rx * a.cos(), c.y + ry * a.sin())
+        })
+        .collect()
+}
+
+fn rounded_rect_points(d: egui::Rect, radius: f32) -> Vec<Pos2> {
+    let r = radius.min(d.width() * 0.5).min(d.height() * 0.5);
+    if r <= 0.01 {
+        return vec![d.left_top(), d.right_top(), d.right_bottom(), d.left_bottom()];
+    }
+    let corners = [
+        (pos2(d.right() - r, d.top() + r), -90.0f32),
+        (pos2(d.right() - r, d.bottom() - r), 0.0),
+        (pos2(d.left() + r, d.bottom() - r), 90.0),
+        (pos2(d.left() + r, d.top() + r), 180.0),
+    ];
+    let mut pts = Vec::with_capacity(4 * 9);
+    for (c, start) in corners {
+        for k in 0..=8 {
+            let a = (start + 90.0 * k as f32 / 8.0).to_radians();
+            pts.push(pos2(c.x + r * a.cos(), c.y + r * a.sin()));
+        }
+    }
+    pts
+}
+
+/// Outline paths (screen points) of a closed shape: (points, closed).
+fn shape_outlines(kind: ShapeKind, d: egui::Rect, r: &Rect, scale: f32) -> Vec<(Vec<Pos2>, bool)> {
+    match kind {
+        ShapeKind::Rectangle => vec![(
+            vec![d.left_top(), d.right_top(), d.right_bottom(), d.left_bottom()],
+            true,
+        )],
+        ShapeKind::RoundedRectangle => {
+            vec![(rounded_rect_points(d, (r.w.min(r.h) * 0.18).min(7.0) * scale), true)]
+        }
+        ShapeKind::Ellipse => vec![(ellipse_points(d.center(), d.width() * 0.5, d.height() * 0.5, 96), true)],
+        ShapeKind::Triangle => vec![(vec![d.center_top(), d.right_bottom(), d.left_bottom()], true)],
+        ShapeKind::Diamond => vec![(
+            vec![d.center_top(), d.right_center(), d.center_bottom(), d.left_center()],
+            true,
+        )],
+        ShapeKind::Cube => {
+            let depth = (d.width() * 0.24).min(d.height() * 0.28);
+            let ftl = pos2(d.left(), d.top() + depth);
+            let ftr = pos2(d.right() - depth, d.top() + depth);
+            let fbr = pos2(d.right() - depth, d.bottom());
+            vec![
+                (vec![ftl, ftr, fbr, d.left_bottom()], true),
+                (vec![ftl, pos2(d.left() + depth, d.top()), d.right_top(), ftr], false),
+                (vec![d.right_top(), pos2(d.right(), d.bottom() - depth), fbr], false),
+            ]
+        }
+        ShapeKind::Cylinder => {
+            let cap = (d.height() * 0.24).min(d.width() * 0.3);
+            let top = pos2(d.center().x, d.top() + cap * 0.5);
+            let bottom = pos2(d.center().x, d.bottom() - cap * 0.5);
+            vec![
+                (vec![pos2(d.left(), top.y), pos2(d.left(), bottom.y)], false),
+                (vec![pos2(d.right(), top.y), pos2(d.right(), bottom.y)], false),
+                (ellipse_points(top, d.width() * 0.5, cap * 0.5, 72), true),
+                (ellipse_points(bottom, d.width() * 0.5, cap * 0.5, 72), true),
+            ]
+        }
+        ShapeKind::Bevel => {
+            let inset = (d.width().min(d.height()) * 0.2).max(1.0);
+            let i = d.shrink(inset);
+            let mut v = vec![
+                (
+                    vec![d.left_top(), d.right_top(), d.right_bottom(), d.left_bottom()],
+                    true,
+                ),
+                (
+                    vec![i.left_top(), i.right_top(), i.right_bottom(), i.left_bottom()],
+                    true,
+                ),
+            ];
+            for (a, b) in [
+                (d.left_top(), i.left_top()),
+                (d.right_top(), i.right_top()),
+                (d.right_bottom(), i.right_bottom()),
+                (d.left_bottom(), i.left_bottom()),
+            ] {
+                v.push((vec![a, b], false));
+            }
+            v
+        }
+        ShapeKind::Line | ShapeKind::Arrow => Vec::new(),
+    }
+}
+
+/// Draw a line-end decoration at `at`, pointing along `dir` (outwards).
+/// Returns how far (screen points) the shaft should stop short of `at`.
+pub fn paint_tip(p: &Painter, tip: LineEnd, at: Pos2, dir: Vec2, width_bp: f32, scale: f32, color: Color32) -> f32 {
+    let (len, wid) = tip.size(width_bp);
+    let (l, w) = (len * scale, wid * scale);
+    let n = vec2(-dir.y, dir.x);
+    let back = at - dir * l;
+    match tip {
+        LineEnd::None => 0.0,
+        LineEnd::Triangle => {
+            p.add(egui::Shape::convex_polygon(
+                vec![at, back + n * w * 0.5, back - n * w * 0.5],
+                color,
+                Stroke::NONE,
+            ));
+            l * 0.6
+        }
+        LineEnd::Open => {
+            let st = Stroke::new(width_bp * scale, color);
+            p.add(egui::Shape::line(vec![back + n * w * 0.5, at, back - n * w * 0.5], st));
+            width_bp * scale * 0.5
+        }
+        LineEnd::Stealth => {
+            let inner = at - dir * l * 0.65;
+            p.add(egui::Shape::convex_polygon(
+                vec![at, back + n * w * 0.5, inner],
+                color,
+                Stroke::NONE,
+            ));
+            p.add(egui::Shape::convex_polygon(
+                vec![at, inner, back - n * w * 0.5],
+                color,
+                Stroke::NONE,
+            ));
+            l * 0.5
+        }
+        LineEnd::Diamond => {
+            let mid = at - dir * l * 0.5;
+            p.add(egui::Shape::convex_polygon(
+                vec![at, mid + n * w * 0.5, back, mid - n * w * 0.5],
+                color,
+                Stroke::NONE,
+            ));
+            l * 0.6
+        }
+        LineEnd::Circle => {
+            p.circle_filled(at - dir * l * 0.5, l * 0.5, color);
+            l * 0.5
+        }
+        LineEnd::Bar => {
+            p.line_segment(
+                [at + n * w * 0.5, at - n * w * 0.5],
+                Stroke::new(width_bp * scale, color),
+            );
+            0.0
+        }
+    }
+}
+
 pub fn paint_shape(p: &Painter, view: &View, r: &Rect, s: &Shape) {
     let sw = s.stroke_width * view.scale;
     let stroke = if s.stroke_width > 0.0 {
@@ -402,53 +642,37 @@ pub fn paint_shape(p: &Painter, view: &View, r: &Rect, s: &Shape) {
     } else {
         Stroke::NONE
     };
+    let fill = s.fill.map(c32).unwrap_or(Color32::TRANSPARENT);
+    let d = view.rect(r);
+    // Fills (with the 3-D shading faces); outlines are stroked below.
     match s.kind {
         ShapeKind::Rectangle | ShapeKind::RoundedRectangle => {
-            let dest = view.rect(r);
             let radius = if s.kind == ShapeKind::RoundedRectangle {
                 (r.w.min(r.h) * 0.18).min(7.0) * view.scale
             } else {
                 0.0
             };
-            if let Some(f) = s.fill {
-                p.rect_filled(dest, radius, c32(f));
-            }
-            if s.stroke_width > 0.0 {
-                p.rect_stroke(dest, radius, stroke, StrokeKind::Middle);
+            if s.fill.is_some() {
+                p.rect_filled(d, radius, fill);
             }
         }
         ShapeKind::Ellipse => {
-            let dest = view.rect(r);
-            let radius = dest.size() * 0.5;
-            if let Some(f) = s.fill {
-                p.add(egui::Shape::ellipse_filled(dest.center(), radius, c32(f)));
-            }
-            if s.stroke_width > 0.0 {
-                p.add(egui::Shape::ellipse_stroke(dest.center(), radius, stroke));
+            if s.fill.is_some() {
+                p.add(egui::Shape::ellipse_filled(d.center(), d.size() * 0.5, fill));
             }
         }
         ShapeKind::Triangle | ShapeKind::Diamond => {
-            let dest = view.rect(r);
-            let points = if s.kind == ShapeKind::Triangle {
-                vec![dest.center_top(), dest.right_bottom(), dest.left_bottom()]
-            } else {
-                vec![
-                    dest.center_top(),
-                    dest.right_center(),
-                    dest.center_bottom(),
-                    dest.left_center(),
-                ]
-            };
-            p.add(egui::Shape::convex_polygon(
-                points,
-                s.fill.map(c32).unwrap_or(Color32::TRANSPARENT),
-                stroke,
-            ));
+            if s.fill.is_some() {
+                let pts = if s.kind == ShapeKind::Triangle {
+                    vec![d.center_top(), d.right_bottom(), d.left_bottom()]
+                } else {
+                    vec![d.center_top(), d.right_center(), d.center_bottom(), d.left_center()]
+                };
+                p.add(egui::Shape::convex_polygon(pts, fill, Stroke::NONE));
+            }
         }
         ShapeKind::Cube => {
-            let d = view.rect(r);
             let depth = (d.width() * 0.24).min(d.height() * 0.28);
-            let fill = s.fill.map(c32).unwrap_or(Color32::TRANSPARENT);
             let front = vec![
                 pos2(d.left(), d.top() + depth),
                 pos2(d.right() - depth, d.top() + depth),
@@ -467,17 +691,19 @@ pub fn paint_shape(p: &Painter, view: &View, r: &Rect, s: &Shape) {
                 pos2(d.right(), d.bottom() - depth),
                 pos2(d.right() - depth, d.bottom()),
             ];
-            p.add(egui::Shape::convex_polygon(front, fill, stroke));
-            p.add(egui::Shape::convex_polygon(top, fill.gamma_multiply(1.2), stroke));
-            p.add(egui::Shape::convex_polygon(side, fill.gamma_multiply(0.72), stroke));
+            p.add(egui::Shape::convex_polygon(front, fill, Stroke::NONE));
+            p.add(egui::Shape::convex_polygon(top, fill.gamma_multiply(1.2), Stroke::NONE));
+            p.add(egui::Shape::convex_polygon(
+                side,
+                fill.gamma_multiply(0.72),
+                Stroke::NONE,
+            ));
         }
         ShapeKind::Cylinder => {
-            let d = view.rect(r);
             let cap = (d.height() * 0.24).min(d.width() * 0.3);
             let radius = vec2(d.width() * 0.5, cap * 0.5);
             let top = pos2(d.center().x, d.top() + cap * 0.5);
             let bottom = pos2(d.center().x, d.bottom() - cap * 0.5);
-            let fill = s.fill.map(c32).unwrap_or(Color32::TRANSPARENT);
             p.rect_filled(
                 egui::Rect::from_min_max(pos2(d.left(), top.y), pos2(d.right(), bottom.y)),
                 0.0,
@@ -485,60 +711,37 @@ pub fn paint_shape(p: &Painter, view: &View, r: &Rect, s: &Shape) {
             );
             p.add(egui::Shape::ellipse_filled(bottom, radius, fill.gamma_multiply(0.78)));
             p.add(egui::Shape::ellipse_filled(top, radius, fill.gamma_multiply(1.18)));
-            if s.stroke_width > 0.0 {
-                p.line_segment([pos2(d.left(), top.y), pos2(d.left(), bottom.y)], stroke);
-                p.line_segment([pos2(d.right(), top.y), pos2(d.right(), bottom.y)], stroke);
-                p.add(egui::Shape::ellipse_stroke(top, radius, stroke));
-                p.add(egui::Shape::ellipse_stroke(bottom, radius, stroke));
-            }
         }
         ShapeKind::Bevel => {
-            let d = view.rect(r);
             let inset = (d.width().min(d.height()) * 0.2).max(1.0);
             let inner = d.shrink(inset);
-            let fill = s.fill.map(c32).unwrap_or(Color32::TRANSPARENT);
-            let top = vec![d.left_top(), d.right_top(), inner.right_top(), inner.left_top()];
-            let right = vec![d.right_top(), d.right_bottom(), inner.right_bottom(), inner.right_top()];
-            let bottom = vec![
-                d.right_bottom(),
-                d.left_bottom(),
-                inner.left_bottom(),
-                inner.right_bottom(),
+            let faces = [
+                (
+                    vec![d.left_top(), d.right_top(), inner.right_top(), inner.left_top()],
+                    1.22,
+                ),
+                (
+                    vec![d.right_top(), d.right_bottom(), inner.right_bottom(), inner.right_top()],
+                    0.72,
+                ),
+                (
+                    vec![
+                        d.right_bottom(),
+                        d.left_bottom(),
+                        inner.left_bottom(),
+                        inner.right_bottom(),
+                    ],
+                    0.62,
+                ),
+                (
+                    vec![d.left_bottom(), d.left_top(), inner.left_top(), inner.left_bottom()],
+                    0.92,
+                ),
             ];
-            let left = vec![d.left_bottom(), d.left_top(), inner.left_top(), inner.left_bottom()];
-            p.add(egui::Shape::convex_polygon(
-                top,
-                fill.gamma_multiply(1.22),
-                Stroke::NONE,
-            ));
-            p.add(egui::Shape::convex_polygon(
-                right,
-                fill.gamma_multiply(0.72),
-                Stroke::NONE,
-            ));
-            p.add(egui::Shape::convex_polygon(
-                bottom,
-                fill.gamma_multiply(0.62),
-                Stroke::NONE,
-            ));
-            p.add(egui::Shape::convex_polygon(
-                left,
-                fill.gamma_multiply(0.92),
-                Stroke::NONE,
-            ));
-            p.rect_filled(inner, 0.0, fill);
-            if s.stroke_width > 0.0 {
-                p.rect_stroke(d, 0.0, stroke, StrokeKind::Middle);
-                p.rect_stroke(inner, 0.0, stroke, StrokeKind::Middle);
-                for (a, b) in [
-                    (d.left_top(), inner.left_top()),
-                    (d.right_top(), inner.right_top()),
-                    (d.right_bottom(), inner.right_bottom()),
-                    (d.left_bottom(), inner.left_bottom()),
-                ] {
-                    p.line_segment([a, b], stroke);
-                }
+            for (pts, k) in faces {
+                p.add(egui::Shape::convex_polygon(pts, fill.gamma_multiply(k), Stroke::NONE));
             }
+            p.rect_filled(inner, 0.0, fill);
         }
         ShapeKind::Line | ShapeKind::Arrow => {
             if s.stroke_width <= 0.0 {
@@ -546,25 +749,31 @@ pub fn paint_shape(p: &Painter, view: &View, r: &Rect, s: &Shape) {
             }
             let (a, b) = s.endpoints(r);
             let (a, b) = (view.pt(a.0, a.1), view.pt(b.0, b.1));
-            let d = b - a;
-            let len = d.length();
-            if s.kind == ShapeKind::Arrow && len > 0.01 {
-                let (hl, hw) = arrow_head(s.stroke_width);
-                let (hl, hw) = (hl * view.scale, hw * view.scale);
-                let dir = d / len;
-                let n = vec2(-dir.y, dir.x);
-                let base = b - dir * hl.min(len);
-                // Stop the shaft inside the head so the joint is hidden.
-                let shaft_end = b - dir * (hl.min(len) * 0.6);
-                p.line_segment([a, shaft_end], stroke);
-                p.add(egui::Shape::convex_polygon(
-                    vec![b, base + n * hw * 0.5, base - n * hw * 0.5],
-                    c32(s.stroke),
-                    Stroke::NONE,
-                ));
-            } else {
-                p.line_segment([a, b], stroke);
+            let dvec = b - a;
+            let len = dvec.length();
+            if len <= 0.01 {
+                return;
             }
+            let dir = dvec / len;
+            let color = c32(s.stroke);
+            // Tips are solid; the shaft stops inside filled tips.
+            let cut_end = paint_tip(p, s.end_tip, b, dir, s.stroke_width, view.scale, color).min(len * 0.45);
+            let cut_start = paint_tip(p, s.start_tip, a, -dir, s.stroke_width, view.scale, color).min(len * 0.45);
+            stroke_path(
+                p,
+                &[a + dir * cut_start, b - dir * cut_end],
+                false,
+                stroke,
+                s.dash,
+                s.stroke_width,
+                view.scale,
+            );
+            return;
+        }
+    }
+    if s.stroke_width > 0.0 {
+        for (pts, closed) in shape_outlines(s.kind, d, r, view.scale) {
+            stroke_path(p, &pts, closed, stroke, s.dash, s.stroke_width, view.scale);
         }
     }
 }

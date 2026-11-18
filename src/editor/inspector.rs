@@ -206,7 +206,22 @@ fn single(ui: &mut Ui, ed: &mut Editor, assets: &AssetStore) {
                         .max_decimals(2)
                         .suffix(" pt"),
                 );
+                if let Some(d) = crate::ui::line_style::dash_menu(ui, s.dash) {
+                    s.dash = d;
+                }
             });
+            if s.kind.is_linear() {
+                ui.horizontal(|ui| {
+                    ui.label("Begin");
+                    if let Some(t) = crate::ui::line_style::tip_menu(ui, s.start_tip, true) {
+                        s.start_tip = t;
+                    }
+                    ui.label("End");
+                    if let Some(t) = crate::ui::line_style::tip_menu(ui, s.end_tip, false) {
+                        s.end_tip = t;
+                    }
+                });
+            }
             if !s.kind.is_linear() {
                 section(ui, "FILL");
                 ui.horizontal(|ui| {
@@ -222,9 +237,14 @@ fn single(ui: &mut Ui, ed: &mut Editor, assets: &AssetStore) {
                 ui.horizontal(|ui| {
                     if icons::small_toggle(ui, Icon::Line, "Line", s.kind == ShapeKind::Line).clicked() {
                         s.kind = ShapeKind::Line;
+                        s.start_tip = crate::document::LineEnd::None;
+                        s.end_tip = crate::document::LineEnd::None;
                     }
                     if icons::small_toggle(ui, Icon::Arrow, "Arrow", s.kind == ShapeKind::Arrow).clicked() {
                         s.kind = ShapeKind::Arrow;
+                        if s.end_tip == crate::document::LineEnd::None {
+                            s.end_tip = crate::document::LineEnd::Triangle;
+                        }
                     }
                     if icons::small(ui, Icon::Arrow, "Reverse")
                         .on_hover_text("Reverse direction")

@@ -8,8 +8,8 @@
 
 use crate::assets::AssetMeta;
 use crate::document::{
-    AssetId, BeamerTheme, CharFmt, Color, Document, ListKind, Object, ObjectKind, ParaFmt, ParaStyle, Shape, ShapeKind,
-    Slide, TextAlign, TextBox, typeset,
+    AssetId, BeamerTheme, CharFmt, Color, DashStyle, Document, LineEnd, ListKind, Object, ObjectKind, ParaFmt,
+    ParaStyle, Shape, ShapeKind, Slide, TextAlign, TextBox, typeset,
 };
 use crate::latex::{CompileOptions, Toolchain};
 use crate::persistence::SaveSnapshot;
@@ -321,9 +321,42 @@ fn image_node(o: &Object, rel: Option<&String>) -> String {
 }
 
 /// Arrow-head size used by both the editor and the export.
-pub fn arrow_head(stroke_width: f32) -> (f32, f32) {
-    let len = 3.0 + 3.0 * stroke_width;
-    (len, len * 0.8)
+/// TikZ `dash pattern` (and round caps for dots) matching the editor.
+fn dash_option(dash: DashStyle, w: f32) -> Option<String> {
+    let pat = dash.pattern(w);
+    if pat.is_empty() {
+        return None;
+    }
+    let mut o = String::from("dash pattern=");
+    for (k, (on, off)) in pat.iter().enumerate() {
+        if k > 0 {
+            o.push(' ');
+        }
+        let _ = write!(o, "on {}bp off {}bp", bp(*on), bp(*off));
+    }
+    if dash.round_caps() {
+        o.push_str(",line cap=round");
+    }
+    Some(o)
+}
+
+/// arrows.meta tip for a line end, sized like the editor's.
+fn tikz_tip(t: LineEnd, w: f32) -> String {
+    let (l, wd) = t.size(w);
+    match t {
+        LineEnd::None => String::new(),
+        LineEnd::Triangle => format!("Triangle[length={}bp,width={}bp]", bp(l), bp(wd)),
+        LineEnd::Open => format!("Straight Barb[length={}bp,width={}bp]", bp(l), bp(wd)),
+        LineEnd::Stealth => format!(
+            "Stealth[length={}bp,width={}bp,inset={}bp]",
+            bp(l),
+            bp(wd),
+            bp(l * 0.35)
+        ),
+        LineEnd::Diamond => format!("Diamond[length={}bp,width={}bp]", bp(l), bp(wd)),
+        LineEnd::Circle => format!("Circle[length={}bp]", bp(l)),
+        LineEnd::Bar => format!("Bar[width={}bp]", bp(wd)),
+    }
 }
 
 fn shape_cmd(o: &Object, s: &Shape) -> String {
@@ -335,6 +368,9 @@ fn shape_cmd(o: &Object, s: &Shape) -> String {
         opts.push(format!("line width={}bp", bp(s.stroke_width)));
         if let Some(a) = opacity(s.stroke) {
             opts.push(format!("draw opacity={a}"));
+        }
+        if let Some(d) = dash_option(s.dash, s.stroke_width) {
+            opts.push(d);
         }
     }
     let stroke_opts = opts.clone();
@@ -470,10 +506,15 @@ fn shape_cmd(o: &Object, s: &Shape) -> String {
             if !has_stroke {
                 return String::new();
             }
-            opts.push("line cap=butt".into());
-            if s.kind == ShapeKind::Arrow {
-                let (len, wid) = arrow_head(s.stroke_width);
-                opts.push(format!("-{{Triangle[length={}bp,width={}bp]}}", bp(len), bp(wid)));
+            if !s.dash.round_caps() {
+                opts.push("line cap=butt".into());
+            }
+            if s.start_tip != LineEnd::None || s.end_tip != LineEnd::None {
+                let (a, b) = (
+                    tikz_tip(s.start_tip, s.stroke_width),
+                    tikz_tip(s.end_tip, s.stroke_width),
+                );
+                opts.push(format!("{{{a}}}-{{{b}}}"));
             }
             let (a, b) = s.endpoints(r);
             format!(
@@ -844,6 +885,59 @@ mod tests {
             kind: ObjectKind::Text(t),
         });
         assert_eq!(slide_title(&slide).as_deref(), Some("Title"));
+    }
+
+    #[test]
+    fn dashes_and_line_ends_export_to_tikz() {
+        let mut s = Shape::new(ShapeKind::Line);
+        s.stroke_width = 1.0;
+        s.dash = DashStyle::DashDot;
+        s.start_tip = LineEnd::Circle;
+        s.end_tip = LineEnd::Stealth;
+        let r = s.set_endpoints((0.0, 0.0), (100.0, 0.0));
+        let tex = shape_cmd(
+            &Object {
+                id: ObjectId(1),
+                rect: r,
+                kind: ObjectKind::Shape(s),
+            },
+            &{
+                let mut s = Shape::new(ShapeKind::Line);
+                s.stroke_width = 1.0;
+                s.dash = DashStyle::DashDot;
+                s.start_tip = LineEnd::Circle;
+                s.end_tip = LineEnd::Stealth;
+                s
+            },
+        );
+        assert!(tex.contains("dash pattern=on 4bp off 3bp on 1bp off 3bp"), "{tex}");
+        assert!(
+            tex.contains("{Circle[length=4.2bp]}-{Stealth[length=6bp,width=4.8bp,inset=2.1bp]}"),
+            "{tex}"
+        );
+        let mut dots = Shape::new(ShapeKind::Rectangle);
+        dots.dash = DashStyle::RoundDot;
+        dots.stroke_width = 2.0;
+        let tex = shape_cmd(
+            &Object {
+                id: ObjectId(2),
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                kind: ObjectKind::Shape(dots.clone()),
+            },
+            &dots,
+        );
+        assert!(tex.contains("dash pattern=on 0bp off 4bp,line cap=round"), "{tex}");
+        // Plain arrows keep a triangle head; solid lines have no pattern.
+        let arrow = Shape::new(ShapeKind::Arrow);
+        let tex = shape_cmd(
+            &Object {
+                id: ObjectId(3),
+                rect: Rect::new(0.0, 0.0, 10.0, 0.0),
+                kind: ObjectKind::Shape(arrow.clone()),
+            },
+            &arrow,
+        );
+        assert!(tex.contains("{}-{Triangle[") && !tex.contains("dash pattern"), "{tex}");
     }
 
     #[test]

@@ -87,6 +87,11 @@ optional pane with exact position, size, colours and picture details.
 * **Sections** — add a named divider before the current slide from the Slides
   pane or a slide's context menu. Click a section header to collapse/expand;
   right-click it to rename or remove it. Sections are included in Beamer export.
+* **Dashes and line ends** — *Home › Drawing* or the Format pane: dash type
+  (solid, round dot, square dot, dash, dash dot, long dash, long dash dot) for
+  any outline; begin/end types for lines and arrows (arrow, open arrow,
+  stealth, diamond, oval, bar). Exported as TikZ dash patterns and
+  `arrows.meta` tips of the same size.
 * **Colours** — every colour button opens a picker with theme colours (tints
   and shades), standard colours, suggestions for the current colour (lighter,
   darker, complementary, analogous, triadic), recent colours, and *More

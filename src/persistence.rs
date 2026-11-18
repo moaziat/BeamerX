@@ -26,7 +26,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 pub const FORMAT_NAME: &str = "beamerx";
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 pub const MIMETYPE: &str = "application/x-beamerx";
 pub const EXTENSION: &str = "beamerx";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -163,6 +163,10 @@ fn migrate(mut v: Value) -> Result<Value> {
         }
         ver = 5;
     }
+    if ver == 5 {
+        migrate_v5_to_v6(&mut v);
+        ver = 6;
+    }
     v["format_version"] = ver.into();
     Ok(v)
 }
@@ -223,6 +227,27 @@ fn migrate_v2_to_v3(v: &mut Value) {
                     .unwrap_or(1);
                 let para = serde_json::json!({ "list": "bullet" });
                 obj.insert("paras".into(), Value::Array(vec![para; lines]));
+            }
+        }
+    }
+}
+
+/// Format 6 made line ends explicit (`start_tip` / `end_tip`) and added
+/// dash styles; an arrow used to imply a triangle at its end.
+fn migrate_v5_to_v6(v: &mut Value) {
+    let Some(slides) = v.pointer_mut("/document/slides").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for slide in slides {
+        let Some(objects) = slide.get_mut("objects").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for o in objects {
+            if o.get("type").and_then(Value::as_str) == Some("shape")
+                && o.get("kind").and_then(Value::as_str) == Some("arrow")
+                && let Some(obj) = o.as_object_mut()
+            {
+                obj.entry("end_tip").or_insert_with(|| Value::String("triangle".into()));
             }
         }
     }
@@ -498,6 +523,40 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn v5_arrows_keep_their_heads() {
+        let mut v = serde_json::to_value(Manifest {
+            format: FORMAT_NAME.into(),
+            format_version: 5,
+            app_version: "0.1.0".into(),
+            document: Document::new(),
+            assets: vec![],
+        })
+        .unwrap();
+        v["document"]["slides"][0]["objects"] = serde_json::json!([
+            {"id": 900, "rect": {"x": 0.0, "y": 0.0, "w": 50.0, "h": 0.0}, "type": "shape", "kind": "arrow",
+             "stroke": "#000000", "stroke_width": 1.0, "fill": null},
+            {"id": 901, "rect": {"x": 0.0, "y": 0.0, "w": 50.0, "h": 0.0}, "type": "shape", "kind": "line",
+             "stroke": "#000000", "stroke_width": 1.0, "fill": null}
+        ]);
+        let (doc, _) = parse_manifest(&serde_json::to_vec(&v).unwrap()).unwrap();
+        let tips: Vec<(LineEnd, LineEnd, DashStyle)> = doc.slides[0]
+            .objects
+            .iter()
+            .map(|o| match &o.kind {
+                ObjectKind::Shape(s) => (s.start_tip, s.end_tip, s.dash),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(
+            tips,
+            [
+                (LineEnd::None, LineEnd::Triangle, DashStyle::Solid),
+                (LineEnd::None, LineEnd::None, DashStyle::Solid)
+            ]
+        );
     }
 
     #[test]
