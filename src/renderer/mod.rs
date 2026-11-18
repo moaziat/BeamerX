@@ -48,6 +48,7 @@ pub fn install_fonts(ctx: &egui::Context) {
         chain.extend(fallback.iter().cloned());
         defs.families.insert(FontFamily::Name(name.into()), chain);
     }
+    crate::ui::add_system_ui_font(&mut defs);
     ctx.set_fonts(defs);
 }
 

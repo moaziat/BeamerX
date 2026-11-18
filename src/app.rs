@@ -129,6 +129,8 @@ impl BeamerApp {
     pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>, bench: Option<crate::bench::Bench>) -> Self {
         let ctx = cc.egui_ctx.clone();
         renderer::install_fonts(&ctx);
+        crate::ui::install_style(&ctx);
+        crate::ui::ThemeChoice::Light.apply(&ctx);
         ctx.all_styles_mut(|s| {
             s.spacing.button_padding = egui::vec2(6.0, 3.0);
         });

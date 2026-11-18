@@ -31,3 +31,4 @@ pub mod persistence;
 pub mod platform;
 pub mod renderer;
 pub mod rich;
+pub mod ui;

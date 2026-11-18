@@ -9,15 +9,11 @@ use crate::document::{Color, MAX_FONT_SIZE, MIN_FONT_SIZE, ObjectKind, Rect, Sha
 use crate::math::MathService;
 use egui::{Color32, DragValue, RichText, Ui};
 
+/// Colour button with theme colours, suggestions, recent colours and a
+/// colour wheel (see [`crate::ui::color_picker`]).
 pub fn color_edit(ui: &mut Ui, c: &mut Color) -> bool {
-    let mut c32 = Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a);
-    let changed =
-        egui::color_picker::color_edit_button_srgba(ui, &mut c32, egui::color_picker::Alpha::OnlyBlend).changed();
-    if changed {
-        let [r, g, b, a] = c32.to_srgba_unmultiplied();
-        *c = Color::rgba(r, g, b, a);
-    }
-    changed
+    let salt = ui.next_auto_id();
+    crate::ui::color_picker::edit(ui, salt, c)
 }
 
 fn section(ui: &mut Ui, title: &str) {
