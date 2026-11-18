@@ -141,7 +141,16 @@ fn single(ui: &mut Ui, ed: &mut Editor, assets: &AssetStore) {
                 ui.selectable_value(&mut t.align, TextAlign::Left, "Left");
                 ui.selectable_value(&mut t.align, TextAlign::Center, "Center");
                 ui.selectable_value(&mut t.align, TextAlign::Right, "Right");
-                ui.toggle_value(&mut t.bullets, "• Bullets");
+                let mut list = t.para(0).list != crate::document::ListKind::None;
+                if ui.toggle_value(&mut list, "• Bullets").changed() {
+                    let n = t.line_count();
+                    let kind = if list {
+                        crate::document::ListKind::Bullet
+                    } else {
+                        crate::document::ListKind::None
+                    };
+                    t.format_lines(0, n - 1, |p| p.list = kind);
+                }
             });
         }
         ObjectKind::Image(i) => {

@@ -11,7 +11,7 @@
 //! so it can be edited; everything else stays rendered ("live preview").
 //! All coordinates are screen points relative to the box's top-left corner.
 
-use crate::document::{Color, TextAlign, TextBox, typeset};
+use crate::document::{Color, ListKind, TextAlign, TextBox, typeset};
 use crate::math::{MathRender, MathService, MathStatus};
 use crate::renderer::{c32, text_family};
 use crate::rich::{self, ParaKind, RunKind};
@@ -43,6 +43,8 @@ pub struct Placed {
     /// For rendered math: caret index used when the user clicks into it
     /// (just before the closing delimiter), which reveals its source.
     pub enter_at: Option<usize>,
+    /// Tint for math (its text colour).
+    pub tint: Color32,
 }
 
 #[derive(Clone)]
@@ -50,9 +52,11 @@ pub struct Line {
     pub baseline: f32,
     pub ascent: f32,
     pub descent: f32,
+    /// Font size of the line's paragraph (screen points).
+    pub size: f32,
     pub items: Vec<Placed>,
-    /// Bullet glyph drawn left of the line.
-    pub bullet: Option<(Arc<Galley>, f32)>,
+    /// List label (bullet or number): galley, its baseline offset and x.
+    pub bullet: Option<(Arc<Galley>, f32, f32)>,
     /// Char stops on this line: (index, x), sorted by x.
     pub stops: Vec<(usize, f32)>,
 }
@@ -88,10 +92,11 @@ pub struct LayoutInput<'a> {
 }
 
 enum Atom {
+    /// A word; `raw` words (math source) use `color` instead of char formats.
     Word {
         range: Range<usize>,
         text: String,
-        color: Color32,
+        raw: Option<Color32>,
     },
     Space {
         range: Range<usize>,
@@ -103,23 +108,31 @@ enum Atom {
     },
 }
 
+/// Per-paragraph text measurement context.
 struct Measure<'p> {
     painter: &'p Painter,
     size: f32,
-    family: egui::FontFamily,
 }
 
 impl Measure<'_> {
-    fn galley(&self, text: &str, color: Color32) -> Arc<Galley> {
-        let job = LayoutJob::single_section(
-            text.to_string(),
-            TextFormat {
-                font_id: FontId::new(self.size, self.family.clone()),
-                color,
-                ..Default::default()
-            },
-        );
+    fn job(&self, sections: &[(String, bool, bool, Color32)]) -> Arc<Galley> {
+        let mut job = LayoutJob::default();
+        for (text, bold, italic, color) in sections {
+            job.append(
+                text,
+                0.0,
+                TextFormat {
+                    font_id: FontId::new(self.size, text_family(*bold, *italic)),
+                    color: *color,
+                    ..Default::default()
+                },
+            );
+        }
         self.painter.layout_job(job)
+    }
+
+    fn galley(&self, text: &str, bold: bool, italic: bool, color: Color32) -> Arc<Galley> {
+        self.job(&[(text.to_string(), bold, italic, color)])
     }
 
     fn baseline_of(g: &Galley) -> f32 {
@@ -130,8 +143,8 @@ impl Measure<'_> {
     }
 
     fn space_width(&self) -> f32 {
-        let a = self.galley("x x", Color32::BLACK).size().x;
-        let b = self.galley("xx", Color32::BLACK).size().x;
+        let a = self.galley("x x", false, false, Color32::BLACK).size().x;
+        let b = self.galley("xx", false, false, Color32::BLACK).size().x;
         (a - b).max(self.size * 0.2)
     }
 }
@@ -140,32 +153,21 @@ impl Measure<'_> {
 pub fn layout(painter: &Painter, math: &mut MathService, now: Instant, inp: &LayoutInput) -> TextLayout {
     let t = inp.style;
     let s = inp.scale;
-    let size = t.font_size * s;
-    let m = Measure {
-        painter,
-        size,
-        family: text_family(t.bold, t.italic),
-    };
-    let color = c32(t.color);
     let chars: Vec<char> = t.text.chars().collect();
+    let fmts = t.char_formats();
+    let pfs = t.paras_normalized();
+    let labels = crate::document::list_labels(&pfs);
     let paras = rich::paragraphs(&chars);
     let editing = inp.caret.is_some();
     let inside = |r: &Range<usize>| inp.caret.is_some_and(|c| c > r.start && c < r.end);
-
-    let space_w = m.space_width();
-    let indent = if t.bullets { size * typeset::BULLET_INDENT } else { 0.0 };
-    let limit = (inp.width_bp * s - indent).max(1.0);
-    let (text_asc, text_desc) = (
-        size * typeset::FIRST_BASELINE,
-        size * (typeset::LINE_SPREAD - typeset::FIRST_BASELINE),
-    );
+    let unit = t.font_size * typeset::BULLET_INDENT * s;
 
     let mut pending = false;
     let mut errors = Vec::new();
     let mut lines: Vec<Line> = Vec::new();
 
     // Tokenize plain chars (text or raw math source) into words and spaces.
-    let tokenize = |atoms: &mut Vec<Atom>, r: Range<usize>, color: Color32, raw: bool| {
+    let tokenize = |atoms: &mut Vec<Atom>, r: Range<usize>, raw: Option<Color32>| {
         let mut i = r.start;
         while i < r.end {
             if chars[i].is_whitespace() {
@@ -176,7 +178,7 @@ pub fn layout(painter: &Painter, math: &mut MathService, now: Instant, inp: &Lay
                 while i < r.end && !chars[i].is_whitespace() {
                     i += 1;
                 }
-                let text = if raw || editing {
+                let text = if raw.is_some() || editing {
                     chars[start..i].iter().collect()
                 } else {
                     rich::unescape_text(&chars[start..i])
@@ -184,20 +186,34 @@ pub fn layout(painter: &Painter, math: &mut MathService, now: Instant, inp: &Lay
                 atoms.push(Atom::Word {
                     range: start..i,
                     text,
-                    color,
+                    raw,
                 });
             }
         }
     };
 
     for para in &paras {
+        let pf = pfs.get(para.line).copied().unwrap_or_default();
+        let base_size = t.font_size * pf.style.size_factor();
+        let size = base_size * s;
+        let m = Measure { painter, size };
+        let resolved = |i: usize| t.resolve(fmts.get(i).copied().unwrap_or_default(), pf);
+        let list = pf.list != ListKind::None;
+        let indent = f32::from(pf.level) * unit + if list { unit } else { 0.0 };
+        let limit = (inp.width_bp * s - indent).max(1.0);
+        let (text_asc, text_desc) = (
+            size * typeset::FIRST_BASELINE,
+            size * (typeset::LINE_SPREAD - typeset::FIRST_BASELINE),
+        );
+        let space_w = m.space_width();
+
         let mut atoms: Vec<Atom> = Vec::new();
         let mut display_atom = false;
-        // Rendered math, or `None` after recording why it is not available.
+        // Rendered math, or the colour to show its source in.
         let mut query =
             |src: &Range<usize>, display: bool, math: &mut MathService| -> Result<Arc<MathRender>, Color32> {
                 let src_s = rich::slice(&chars, src);
-                match math.request(&src_s, t.font_size, display, now) {
+                match math.request(&src_s, base_size, display, now) {
                     MathStatus::Ready(r) => Ok(r),
                     MathStatus::Pending => {
                         pending = true;
@@ -225,13 +241,13 @@ pub fn layout(painter: &Painter, math: &mut MathService, now: Instant, inp: &Lay
                         });
                         display_atom = true;
                     }
-                    Err(c) => tokenize(&mut atoms, para.range.clone(), c, true),
+                    Err(c) => tokenize(&mut atoms, para.range.clone(), Some(c)),
                 }
             }
             ParaKind::Normal(runs) => {
                 for run in runs {
                     match &run.kind {
-                        RunKind::Text => tokenize(&mut atoms, run.range.clone(), color, false),
+                        RunKind::Text => tokenize(&mut atoms, run.range.clone(), None),
                         RunKind::Math { src } => {
                             let r = if inside(&run.range) {
                                 Err(SOURCE_COLOR)
@@ -244,7 +260,7 @@ pub fn layout(painter: &Painter, math: &mut MathService, now: Instant, inp: &Lay
                                     render,
                                     enter_at: src.end,
                                 }),
-                                Err(c) => tokenize(&mut atoms, run.range.clone(), c, true),
+                                Err(c) => tokenize(&mut atoms, run.range.clone(), Some(c)),
                             }
                         }
                     }
@@ -253,9 +269,7 @@ pub fn layout(painter: &Painter, math: &mut MathService, now: Instant, inp: &Lay
         }
 
         // ---- break into lines --------------------------------------------
-        let blank = atoms.iter().all(|a| matches!(a, Atom::Space { .. }));
-        let wants_bullet = t.bullets && para.starts_line && !blank && !matches!(para.kind, ParaKind::Display { .. });
-        let mut cur = new_line();
+        let mut cur = new_line(size);
         let mut x = 0.0f32;
         let mut has_content = false;
         let mut para_lines: Vec<Line> = Vec::new();
@@ -273,13 +287,13 @@ pub fn layout(painter: &Painter, math: &mut MathService, now: Instant, inp: &Lay
             let mut cw = 0.0;
             let mut built: Vec<Placed> = Vec::new();
             while j < atoms.len() && !matches!(atoms[j], Atom::Space { .. }) {
-                let p = place(&atoms[j], &m, s);
+                let p = place(&atoms[j], &m, s, &resolved, editing);
                 cw += p.w;
                 built.push(p);
                 j += 1;
             }
             if has_content && x + cw > limit {
-                para_lines.push(std::mem::replace(&mut cur, new_line()));
+                para_lines.push(std::mem::replace(&mut cur, new_line(size)));
                 x = 0.0;
             }
             for mut p in built {
@@ -297,6 +311,7 @@ pub fn layout(painter: &Painter, math: &mut MathService, now: Instant, inp: &Lay
         para_lines.push(cur);
 
         // ---- horizontal alignment ----------------------------------------
+        let label = labels.get(para.line).filter(|l| para.starts_line && !l.is_empty());
         for (k, line) in para_lines.iter_mut().enumerate() {
             let content_w = line.items.last().map(|p| p.x + p.w).unwrap_or(0.0);
             let offset = if display_atom {
@@ -314,10 +329,14 @@ pub fn layout(painter: &Painter, math: &mut MathService, now: Instant, inp: &Lay
             for st in &mut line.stops {
                 st.1 += offset;
             }
-            if k == 0 && wants_bullet {
-                let g = m.galley("•", color);
+            if k == 0
+                && let Some(l) = label
+            {
+                // The label hangs in the indent, left-aligned in one unit.
+                let r = resolved(para.range.start);
+                let g = m.galley(l, r.bold, false, c32(r.color));
                 let b = Measure::baseline_of(&g);
-                line.bullet = Some((g, b));
+                line.bullet = Some((g, b, offset - unit));
             }
             line.ascent = line.items.iter().map(|p| p.ascent).fold(text_asc, f32::max);
             line.descent = line.items.iter().map(|p| p.descent).fold(text_desc, f32::max);
@@ -326,11 +345,12 @@ pub fn layout(painter: &Painter, math: &mut MathService, now: Instant, inp: &Lay
     }
 
     // ---- vertical placement (TeX's baselineskip / lineskip rule) ----------
-    let skip = size * typeset::LINE_SPREAD;
+    // Each line uses its own paragraph's \baselineskip (1.2 × its size).
     let lineskip = s; // 1 bp
     let mut prev_desc: Option<f32> = None;
     let mut baseline = 0.0;
     for line in &mut lines {
+        let skip = line.size * typeset::LINE_SPREAD;
         baseline = match prev_desc {
             None => line.ascent,
             Some(d) => {
@@ -345,7 +365,8 @@ pub fn layout(painter: &Painter, math: &mut MathService, now: Instant, inp: &Lay
         prev_desc = Some(line.descent);
         line.stops.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
     }
-    let height = lines.last().map(|l| l.bottom()).unwrap_or(size * typeset::LINE_SPREAD);
+    let fallback = t.font_size * s * typeset::LINE_SPREAD;
+    let height = lines.last().map(|l| l.bottom()).unwrap_or(fallback);
     TextLayout {
         lines,
         height,
@@ -355,30 +376,54 @@ pub fn layout(painter: &Painter, math: &mut MathService, now: Instant, inp: &Lay
     }
 }
 
-fn new_line() -> Line {
+fn new_line(size: f32) -> Line {
     Line {
         baseline: 0.0,
         ascent: 0.0,
         descent: 0.0,
+        size,
         items: Vec::new(),
         bullet: None,
         stops: Vec::new(),
     }
 }
 
-fn place(a: &Atom, m: &Measure, scale: f32) -> Placed {
+fn place(
+    a: &Atom,
+    m: &Measure,
+    scale: f32,
+    resolved: &dyn Fn(usize) -> crate::document::Resolved,
+    editing: bool,
+) -> Placed {
     match a {
-        Atom::Word { range, text, color } => {
-            let galley = m.galley(text, *color);
+        Atom::Word { range, text, raw } => {
+            // Split the word into sections where the char format changes.
+            let wchars: Vec<char> = text.chars().collect();
+            let mut sections: Vec<(String, bool, bool, Color32)> = Vec::new();
+            // Escapes are hidden when not editing, so map sections by source
+            // index only when lengths agree.
+            let aligned = wchars.len() == range.len() || editing;
+            for (k, c) in wchars.iter().enumerate() {
+                let r = resolved(if aligned { range.start + k } else { range.start });
+                let fmt = match raw {
+                    Some(color) => (false, false, *color),
+                    None => (r.bold, r.italic, c32(r.color)),
+                };
+                match sections.last_mut() {
+                    Some(last) if (last.1, last.2, last.3) == fmt => last.0.push(*c),
+                    _ => sections.push((c.to_string(), fmt.0, fmt.1, fmt.2)),
+                }
+            }
+            let galley = m.job(&sections);
             let baseline = Measure::baseline_of(&galley);
-            let w = galley.size().x;
             Placed {
-                w,
+                w: galley.size().x,
                 x: 0.0,
                 chars: range.clone(),
                 ascent: 0.0,
                 descent: 0.0,
                 enter_at: None,
+                tint: Color32::WHITE,
                 piece: Piece::Glyphs { galley, baseline },
             }
         }
@@ -393,6 +438,7 @@ fn place(a: &Atom, m: &Measure, scale: f32) -> Placed {
             ascent: render.ascent_bp() * scale,
             descent: render.depth_bp * scale,
             enter_at: Some(*enter_at),
+            tint: c32(resolved(range.start).color),
             piece: Piece::Math(Arc::clone(render)),
         },
         Atom::Space { .. } => unreachable!("spaces are not placed"),
@@ -419,6 +465,7 @@ impl TextLayout {
     pub fn caret_rect(&self, idx: usize, size: f32) -> Rect {
         let (li, x) = self.stop_of(idx);
         let line = &self.lines[li];
+        let size = if line.size > 0.0 { line.size } else { size };
         let asc = size * typeset::FIRST_BASELINE * 0.95;
         let desc = size * 0.25;
         Rect::from_min_max(pos2(x, line.baseline - asc), pos2(x + 1.0, line.baseline + desc))
@@ -510,8 +557,8 @@ pub fn paint(
 ) {
     let tint = c32(color);
     for line in &lay.lines {
-        if let Some((g, b)) = &line.bullet {
-            p.galley(origin + vec2(0.0, line.baseline - b), Arc::clone(g), tint);
+        if let Some((g, b, x)) = &line.bullet {
+            p.galley(origin + vec2(*x, line.baseline - b), Arc::clone(g), tint);
         }
         for it in &line.items {
             match &it.piece {
@@ -524,7 +571,7 @@ pub fn paint(
                         vec2(it.w, r.size_bp.1 * scale),
                     );
                     if let Some(tex) = textures.math(r, px_per_bp) {
-                        p.image(tex, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
+                        p.image(tex, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), it.tint);
                     }
                 }
             }

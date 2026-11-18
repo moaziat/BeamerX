@@ -104,6 +104,7 @@ pub fn finish_text_edit(ed: &mut Editor, st: &mut CanvasState) {
         ed.history.seal();
         if let Some(ObjectKind::Text(t)) = ed.object(id).map(|o| &o.kind)
             && t.text.trim().is_empty()
+            && t.placeholder.is_none()
         {
             let keep = std::mem::take(&mut ed.selection);
             ed.selection = vec![id];
@@ -266,7 +267,7 @@ fn snap(ed: &Editor, moving: &[ObjectId], bounds: Rect, tol: f32) -> (f32, f32, 
 pub fn refit_text(p: &egui::Painter, sv: &mut Services, kind: &ObjectKind, mut rect: Rect) -> Rect {
     if let ObjectKind::Text(t) = kind {
         let lay = renderer::layout_text(p, sv, t, rect.w, 2.0, None);
-        rect.h = (lay.height / 2.0).max(t.font_size * typeset::LINE_SPREAD);
+        rect.h = (lay.height / 2.0).max(t.max_size() * typeset::LINE_SPREAD);
     }
     rect
 }
@@ -282,7 +283,7 @@ fn apply_text_heights(ed: &mut Editor, heights: &[(ObjectId, f32)], skip: Option
         if let Some(o) = ed.doc.slides[i].object_mut(id)
             && let ObjectKind::Text(t) = &o.kind
         {
-            let h = h.max(t.font_size * typeset::LINE_SPREAD);
+            let h = h.max(t.max_size() * typeset::LINE_SPREAD);
             if (o.rect.h - h).abs() > 0.5 {
                 o.rect.h = h;
             }
@@ -689,7 +690,33 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
         }
     }
 
+    // Double-click on empty slide space creates a text box there.
+    let mut created_by_double_click = false;
+    // (A quick click just before can make egui count a triple-click.)
+    if (resp.double_clicked() || resp.triple_clicked())
+        && ed.tool == Tool::Select
+        && let Some(p) = resp.interact_pointer_pos()
+        && edit_band.is_none_or(|b| !b.contains(p))
+    {
+        let sp = view.to_slide(p);
+        if hit_test(ed, sp, tol).is_none() && view.slide_rect().contains(p) {
+            if editing.is_some() {
+                finish_text_edit(ed, st);
+            }
+            let t = crate::document::TextBox::default();
+            // Put the first baseline roughly where the user clicked.
+            let top = sp.1 - t.font_size * typeset::FIRST_BASELINE * 0.7;
+            let w = (SLIDE_W - sp.0 - 8.0).clamp(60.0, 260.0);
+            let rect = Rect::new(sp.0, top, w, t.font_size * typeset::LINE_SPREAD);
+            let id = ed.insert_object(ObjectKind::Text(t), rect);
+            begin_text_edit(ed, st, id, Caret::End);
+            ed.history.seal();
+            created_by_double_click = true;
+        }
+    }
+
     if resp.clicked()
+        && !created_by_double_click
         && let Some(p) = resp.interact_pointer_pos()
     {
         let sp = view.to_slide(p);

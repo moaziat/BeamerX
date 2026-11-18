@@ -236,14 +236,166 @@ pub enum TextAlign {
     Right,
 }
 
+/// Character formatting override. `None` inherits from the paragraph style
+/// and the box defaults.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CharFmt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bold: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub italic: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<Color>,
+}
+
+impl CharFmt {
+    pub fn is_default(&self) -> bool {
+        *self == CharFmt::default()
+    }
+}
+
+/// A run of characters `[start, end)` (char indices) with a format override.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Span {
+    pub start: u32,
+    pub end: u32,
+    #[serde(flatten)]
+    pub fmt: CharFmt,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParaStyle {
+    #[default]
+    Body,
+    Title,
+    Subtitle,
+    Heading1,
+    Heading2,
+}
+
+impl ParaStyle {
+    pub const ALL: [ParaStyle; 5] = [
+        ParaStyle::Title,
+        ParaStyle::Subtitle,
+        ParaStyle::Heading1,
+        ParaStyle::Heading2,
+        ParaStyle::Body,
+    ];
+
+    /// Font size relative to the box's base size.
+    pub fn size_factor(self) -> f32 {
+        match self {
+            ParaStyle::Body => 1.0,
+            ParaStyle::Title => 1.8,
+            ParaStyle::Subtitle => 1.25,
+            ParaStyle::Heading1 => 1.45,
+            ParaStyle::Heading2 => 1.2,
+        }
+    }
+
+    pub fn bold(self) -> bool {
+        matches!(self, ParaStyle::Title | ParaStyle::Heading1 | ParaStyle::Heading2)
+    }
+
+    pub fn italic(self) -> bool {
+        matches!(self, ParaStyle::Subtitle)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ParaStyle::Body => "Body",
+            ParaStyle::Title => "Title",
+            ParaStyle::Subtitle => "Subtitle",
+            ParaStyle::Heading1 => "Heading 1",
+            ParaStyle::Heading2 => "Heading 2",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListKind {
+    #[default]
+    None,
+    Bullet,
+    Number,
+}
+
+/// Deepest list/indent level (0-based).
+pub const MAX_LEVEL: u8 = 4;
+
+/// Paragraph format for one line of a text box (lines are separated by
+/// `\n` in the text).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ParaFmt {
+    #[serde(default)]
+    pub style: ParaStyle,
+    #[serde(default)]
+    pub list: ListKind,
+    /// Outline level: indentation and bullet shape.
+    #[serde(default)]
+    pub level: u8,
+}
+
+impl ParaFmt {
+    pub fn is_default(&self) -> bool {
+        *self == ParaFmt::default()
+    }
+}
+
+/// Fully resolved character appearance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Resolved {
+    pub bold: bool,
+    pub italic: bool,
+    pub color: Color,
+}
+
+/// Bullet glyph for an outline level.
+pub fn bullet_for_level(level: u8) -> char {
+    ['•', '–', '◦', '–', '•'][usize::from(level.min(MAX_LEVEL))]
+}
+
+/// List labels for each line (`""` for lines that are not list items).
+/// Numbering restarts after any line that is not a numbered item at the
+/// same or a deeper level.
+pub fn list_labels(paras: &[ParaFmt]) -> Vec<String> {
+    let mut counters = [0u32; MAX_LEVEL as usize + 1];
+    paras
+        .iter()
+        .map(|p| {
+            let l = usize::from(p.level.min(MAX_LEVEL));
+            // Deeper levels restart below any item.
+            for c in counters.iter_mut().skip(l + 1) {
+                *c = 0;
+            }
+            match p.list {
+                ListKind::None => {
+                    counters.iter_mut().for_each(|c| *c = 0);
+                    String::new()
+                }
+                ListKind::Bullet => {
+                    counters[l] = 0;
+                    bullet_for_level(p.level).to_string()
+                }
+                ListKind::Number => {
+                    counters[l] += 1;
+                    format!("{}.", counters[l])
+                }
+            }
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TextBox {
     /// Unicode text with LaTeX math: `$…$` inline, `$$…$$` display (see
-    /// [`crate::rich`]). Line breaks are hard breaks; long lines wrap at the
-    /// box width. Plain text is exported with LaTeX specials escaped; math is
-    /// passed to LaTeX as written.
+    /// [`crate::rich`]). Line breaks (`\n`) separate paragraphs; long lines
+    /// wrap at the box width. Plain text is exported with LaTeX specials
+    /// escaped; math is passed to LaTeX as written.
     pub text: String,
-    /// Font size in bp.
+    /// Base font size in bp (paragraph styles scale it).
     pub font_size: f32,
     pub color: Color,
     #[serde(default)]
@@ -252,9 +404,16 @@ pub struct TextBox {
     pub italic: bool,
     #[serde(default)]
     pub align: TextAlign,
-    /// Render each non-empty line as a bullet point.
-    #[serde(default)]
-    pub bullets: bool,
+    /// Character formatting overrides (sorted, non-overlapping).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<Span>,
+    /// Paragraph formats by line; missing entries are the default.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paras: Vec<ParaFmt>,
+    /// Hint shown while the box is empty (layout placeholders). Placeholder
+    /// boxes stay when empty and are not exported until they have text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
 }
 
 impl Default for TextBox {
@@ -266,8 +425,192 @@ impl Default for TextBox {
             bold: false,
             italic: false,
             align: TextAlign::Left,
-            bullets: false,
+            spans: Vec::new(),
+            paras: Vec::new(),
+            placeholder: None,
         }
+    }
+}
+
+impl TextBox {
+    pub fn char_len(&self) -> usize {
+        self.text.chars().count()
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.text.chars().filter(|c| *c == '\n').count() + 1
+    }
+
+    /// Line index of char index `i`.
+    pub fn line_of(&self, i: usize) -> usize {
+        self.text.chars().take(i).filter(|c| *c == '\n').count()
+    }
+
+    pub fn para(&self, line: usize) -> ParaFmt {
+        self.paras.get(line).copied().unwrap_or_default()
+    }
+
+    /// Paragraph formats, one per line.
+    pub fn paras_normalized(&self) -> Vec<ParaFmt> {
+        let n = self.line_count();
+        let mut v = self.paras.clone();
+        v.resize(n, ParaFmt::default());
+        v
+    }
+
+    pub fn set_paras(&mut self, mut v: Vec<ParaFmt>) {
+        v.truncate(self.line_count());
+        for p in &mut v {
+            p.level = p.level.min(MAX_LEVEL);
+        }
+        while v.last().is_some_and(ParaFmt::is_default) {
+            v.pop();
+        }
+        self.paras = v;
+    }
+
+    /// Format override of every char.
+    pub fn char_formats(&self) -> Vec<CharFmt> {
+        let n = self.char_len();
+        let mut v = vec![CharFmt::default(); n];
+        for sp in &self.spans {
+            let (a, b) = (sp.start as usize, (sp.end as usize).min(n));
+            for f in v.iter_mut().take(b).skip(a) {
+                *f = sp.fmt;
+            }
+        }
+        v
+    }
+
+    /// Store per-char formats as spans, dropping overrides that equal what
+    /// the char would inherit anyway.
+    pub fn set_char_formats(&mut self, fmts: &[CharFmt]) {
+        let paras = self.paras_normalized();
+        let mut line = 0usize;
+        let mut spans: Vec<Span> = Vec::new();
+        for (i, (c, f)) in self.text.chars().zip(fmts.iter()).enumerate() {
+            let p = paras[line.min(paras.len() - 1)];
+            let mut f = *f;
+            if f.bold == Some(self.bold || p.style.bold()) {
+                f.bold = None;
+            }
+            if f.italic == Some(self.italic || p.style.italic()) {
+                f.italic = None;
+            }
+            if f.color == Some(self.color) {
+                f.color = None;
+            }
+            if c == '\n' {
+                line += 1;
+                f = CharFmt::default();
+            }
+            if f.is_default() {
+                continue;
+            }
+            match spans.last_mut() {
+                Some(last) if last.end as usize == i && last.fmt == f => last.end += 1,
+                _ => spans.push(Span {
+                    start: i as u32,
+                    end: i as u32 + 1,
+                    fmt: f,
+                }),
+            }
+        }
+        self.spans = spans;
+    }
+
+    /// Appearance of a char with override `cf` in a paragraph `p`.
+    pub fn resolve(&self, cf: CharFmt, p: ParaFmt) -> Resolved {
+        Resolved {
+            bold: cf.bold.unwrap_or(self.bold || p.style.bold()),
+            italic: cf.italic.unwrap_or(self.italic || p.style.italic()),
+            color: cf.color.unwrap_or(self.color),
+        }
+    }
+
+    /// Replace chars `a..b` with `ins`, keeping character and paragraph
+    /// formats aligned. Inserted chars take `fmt`, or the format of the char
+    /// before the insertion point. New lines inherit the paragraph format of
+    /// the line they were split from.
+    pub fn replace(&mut self, a: usize, b: usize, ins: &str, fmt: Option<CharFmt>) {
+        let n = self.char_len();
+        let a = a.min(n);
+        let b = b.clamp(a, n);
+        let mut paras = self.paras_normalized();
+        let line_a = self.line_of(a);
+        let removed_nl = self.text.chars().skip(a).take(b - a).filter(|c| *c == '\n').count();
+        let added_nl = ins.chars().filter(|c| *c == '\n').count();
+        let keep = paras.get(line_a).copied().unwrap_or_default();
+        let end = (line_a + 1 + removed_nl).min(paras.len());
+        paras.drain((line_a + 1).min(end)..end);
+        for _ in 0..added_nl {
+            paras.insert(line_a + 1, keep);
+        }
+
+        let mut fm = self.char_formats();
+        let fill = fmt.unwrap_or_else(|| {
+            if a > 0 {
+                fm[a - 1]
+            } else {
+                fm.get(b).copied().unwrap_or_default()
+            }
+        });
+        let ins_n = ins.chars().count();
+        fm.splice(a..b, std::iter::repeat_n(fill, ins_n));
+
+        let ba = self
+            .text
+            .char_indices()
+            .nth(a)
+            .map(|(i, _)| i)
+            .unwrap_or(self.text.len());
+        let bb = self
+            .text
+            .char_indices()
+            .nth(b)
+            .map(|(i, _)| i)
+            .unwrap_or(self.text.len());
+        self.text.replace_range(ba..bb, ins);
+        self.set_paras(paras);
+        self.set_char_formats(&fm);
+    }
+
+    /// Apply `f` to the char formats of `a..b`.
+    pub fn format_range(&mut self, a: usize, b: usize, f: impl Fn(&mut CharFmt)) {
+        let mut fm = self.char_formats();
+        let b = b.min(fm.len());
+        for x in fm.iter_mut().take(b).skip(a.min(b)) {
+            f(x);
+        }
+        self.set_char_formats(&fm);
+    }
+
+    /// Apply `f` to the paragraph formats of lines `l0..=l1`.
+    pub fn format_lines(&mut self, l0: usize, l1: usize, f: impl Fn(&mut ParaFmt)) {
+        let mut paras = self.paras_normalized();
+        let l1 = l1.min(paras.len() - 1);
+        for p in paras.iter_mut().take(l1 + 1).skip(l0.min(l1)) {
+            f(p);
+        }
+        // Paragraph defaults may change what the char overrides mean.
+        let fm = self.char_formats();
+        self.set_paras(paras);
+        self.set_char_formats(&fm);
+    }
+
+    /// Effective appearance at char `i` (for toolbar state).
+    pub fn resolved_at(&self, i: usize) -> Resolved {
+        let fm = self.char_formats();
+        let cf = fm.get(i).copied().unwrap_or_default();
+        self.resolve(cf, self.para(self.line_of(i)))
+    }
+
+    /// Largest font size used by any paragraph (bp).
+    pub fn max_size(&self) -> f32 {
+        self.paras_normalized()
+            .iter()
+            .map(|p| self.font_size * p.style.size_factor())
+            .fold(self.font_size, f32::max)
     }
 }
 
@@ -388,7 +731,7 @@ impl ObjectKind {
     pub fn approx_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + match self {
-                ObjectKind::Text(t) => t.text.len(),
+                ObjectKind::Text(t) => t.text.len() + t.spans.len() * 16 + t.paras.len() * 4,
                 ObjectKind::Image(i) => i.asset.0.len(),
                 ObjectKind::Shape(_) => 0,
             }
@@ -573,7 +916,14 @@ impl Document {
                 max_id = max_id.max(o.id.0);
                 o.rect = o.rect.sanitized();
                 match &mut o.kind {
-                    ObjectKind::Text(t) => t.font_size = sanitize_font(t.font_size),
+                    ObjectKind::Text(t) => {
+                        t.font_size = sanitize_font(t.font_size);
+                        // Re-derive spans/paras so they are sorted, in range and minimal.
+                        let fm = t.char_formats();
+                        let paras = t.paras_normalized();
+                        t.set_paras(paras);
+                        t.set_char_formats(&fm);
+                    }
                     ObjectKind::Image(i) => {
                         if !i.asset.is_valid() {
                             return Err(format!("invalid asset id {:?}", i.asset.0));
@@ -645,6 +995,95 @@ mod tests {
             let r = s.set_endpoints(a, b);
             assert_eq!(s.endpoints(&r), (a, b), "{a:?} -> {b:?}");
         }
+    }
+
+    fn tb(text: &str) -> TextBox {
+        TextBox {
+            text: text.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn spans_follow_edits() {
+        let mut t = tb("hello world");
+        t.format_range(6, 11, |f| f.bold = Some(true));
+        assert_eq!(
+            t.spans,
+            vec![Span {
+                start: 6,
+                end: 11,
+                fmt: CharFmt {
+                    bold: Some(true),
+                    ..Default::default()
+                }
+            }]
+        );
+        // Typing inside the bold word continues bold; before it, plain.
+        t.replace(8, 8, "XY", None);
+        assert_eq!(t.text, "hello woXYrld");
+        assert_eq!((t.spans[0].start, t.spans[0].end), (6, 13));
+        t.replace(0, 0, "Oh ", None);
+        assert_eq!((t.spans[0].start, t.spans[0].end), (9, 16));
+        // Deleting across the boundary shrinks the span.
+        t.replace(5, 11, "", None);
+        assert_eq!(t.text, "Oh heXYrld");
+        assert_eq!((t.spans[0].start, t.spans[0].end), (5, 10));
+        // Bold equal to the inherited value is not stored.
+        t.bold = true;
+        t.format_range(0, t.char_len(), |f| f.bold = Some(true));
+        assert!(t.spans.is_empty());
+    }
+
+    #[test]
+    fn paragraph_formats_follow_newlines() {
+        let mut t = tb("a\nb");
+        t.format_lines(0, 0, |p| p.style = ParaStyle::Title);
+        t.format_lines(1, 1, |p| p.list = ListKind::Bullet);
+        // Enter at the end of the title starts another title paragraph.
+        t.replace(1, 1, "\n", None);
+        assert_eq!(t.text, "a\n\nb");
+        assert_eq!(t.para(1).style, ParaStyle::Title);
+        assert_eq!(t.para(2).list, ListKind::Bullet);
+        // Joining lines keeps the first line's format.
+        t.replace(1, 3, "", None);
+        assert_eq!(t.text, "ab");
+        assert_eq!(
+            t.paras_normalized(),
+            vec![ParaFmt {
+                style: ParaStyle::Title,
+                ..Default::default()
+            }]
+        );
+    }
+
+    #[test]
+    fn titles_are_bold_by_style_and_overridable() {
+        let mut t = tb("Title");
+        t.format_lines(0, 0, |p| p.style = ParaStyle::Title);
+        assert!(t.resolved_at(0).bold);
+        t.format_range(0, 2, |f| f.bold = Some(false));
+        assert!(!t.resolved_at(0).bold && t.resolved_at(3).bold);
+        assert!((t.max_size() - 36.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn list_labels_number_and_nest() {
+        let p = |list, level| ParaFmt {
+            list,
+            level,
+            ..Default::default()
+        };
+        let labels = list_labels(&[
+            p(ListKind::Number, 0),
+            p(ListKind::Number, 1),
+            p(ListKind::Number, 1),
+            p(ListKind::Number, 0),
+            p(ListKind::Bullet, 1),
+            p(ListKind::None, 0),
+            p(ListKind::Number, 0),
+        ]);
+        assert_eq!(labels, ["1.", "1.", "2.", "2.", "–", "", "1."]);
     }
 
     #[test]

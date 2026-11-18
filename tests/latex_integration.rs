@@ -3,6 +3,8 @@
 
 use beamerx::assets::AssetStore;
 use beamerx::document::*;
+#[allow(unused_imports)]
+use beamerx::document::{ListKind, ParaStyle};
 use beamerx::latex::Toolchain;
 use beamerx::persistence::SaveSnapshot;
 use beamerx::platform::pdf_raster;
@@ -50,12 +52,21 @@ fn sample_deck(store: &AssetStore) -> SaveSnapshot {
         &mut doc,
         s1,
         Rect::new(20.0, 50.0, 200.0, 60.0),
-        ObjectKind::Text(TextBox {
-            text: "First bullet\n\nSecond bullet that is long enough to wrap onto another line\n[bracket] start".into(),
-            font_size: 11.0,
-            bullets: true,
-            italic: true,
-            ..Default::default()
+        ObjectKind::Text({
+            let mut t = TextBox {
+                text: "Heading\nFirst bullet\n\nSecond bullet that is long enough to wrap onto another line\n[bracket] nested\nStep one\nStep two".into(),
+                font_size: 11.0,
+                italic: true,
+                ..Default::default()
+            };
+            t.format_lines(0, 0, |p| p.style = ParaStyle::Heading1);
+            t.format_lines(1, 4, |p| p.list = ListKind::Bullet);
+            t.format_lines(4, 4, |p| p.level = 1);
+            t.format_lines(5, 6, |p| p.list = ListKind::Number);
+            // A bold word, a red word and a blue formula inside a sentence.
+            t.format_range(1, 6, |f| f.bold = Some(true));
+            t.format_range(8, 14, |f| f.color = Some(Color::rgb(200, 0, 0)));
+            t
         }),
     );
     add(

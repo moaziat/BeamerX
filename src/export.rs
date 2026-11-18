@@ -8,7 +8,8 @@
 
 use crate::assets::AssetMeta;
 use crate::document::{
-    AssetId, Color, Document, Object, ObjectKind, Shape, ShapeKind, Slide, TextAlign, TextBox, typeset,
+    AssetId, CharFmt, Color, Document, ListKind, Object, ObjectKind, ParaFmt, ParaStyle, Shape, ShapeKind, Slide,
+    TextAlign, TextBox, typeset,
 };
 use crate::latex::{CompileOptions, Toolchain};
 use crate::persistence::SaveSnapshot;
@@ -141,64 +142,134 @@ fn font_cmd(size: f32) -> String {
 
 /// Text box body: lines separated by `\\`, or a list for bullets.
 /// LaTeX for one paragraph's content (text escaped, math passed through).
-fn paragraph_tex(chars: &[char], para: &rich::Paragraph) -> String {
-    let math = |src: &std::ops::Range<usize>, display: bool| {
-        let src = rich::slice(chars, src);
-        match math_problem(&src) {
-            None => crate::math::math_mode(&src, display),
+/// Switches for a character's format relative to the paragraph defaults.
+fn fmt_switch(r: &crate::document::Resolved, base: &crate::document::Resolved) -> String {
+    let mut sw = String::new();
+    if r.bold != base.bold {
+        sw.push_str(if r.bold { "\\bfseries" } else { "\\mdseries" });
+    }
+    if r.italic != base.italic {
+        sw.push_str(if r.italic { "\\itshape" } else { "\\upshape" });
+    }
+    if r.color != base.color {
+        let _ = write!(sw, "\\color{{{}}}", color_name(r.color));
+    }
+    sw
+}
+
+/// LaTeX for one paragraph's content: text escaped and grouped by character
+/// format, math passed through.
+fn paragraph_tex(t: &TextBox, chars: &[char], fmts: &[CharFmt], pf: ParaFmt, para: &rich::Paragraph) -> String {
+    let base = t.resolve(CharFmt::default(), pf);
+    let at = |i: usize| t.resolve(fmts.get(i).copied().unwrap_or_default(), pf);
+    let math = |src: &std::ops::Range<usize>, display: bool, start: usize| {
+        let s = rich::slice(chars, src);
+        let body = match math_problem(&s) {
+            None => crate::math::math_mode(&s, display),
             Some(why) => format!("\\textcolor{{red}}{{[math error: {}]}}", escape_text(why)),
+        };
+        let r = at(start);
+        if r.color != base.color {
+            format!("{{\\color{{{}}}{body}}}", color_name(r.color))
+        } else {
+            body
         }
     };
     match &para.kind {
         rich::ParaKind::Display { src } => {
-            format!("\\hspace*{{\\fill}}{}\\hspace*{{\\fill}}", math(src, true))
+            format!(
+                "\\hspace*{{\\fill}}{}\\hspace*{{\\fill}}",
+                math(src, true, para.range.start)
+            )
         }
         rich::ParaKind::Normal(runs) => {
             let mut out = String::new();
             for r in runs {
                 match &r.kind {
-                    rich::RunKind::Text => out.push_str(&escape_text(&rich::unescape_text(&chars[r.range.clone()]))),
-                    rich::RunKind::Math { src } => out.push_str(&math(src, false)),
+                    rich::RunKind::Text => {
+                        // Split the run where the format changes.
+                        let mut i = r.range.start;
+                        while i < r.range.end {
+                            let f = at(i);
+                            let mut j = i + 1;
+                            while j < r.range.end && at(j) == f {
+                                j += 1;
+                            }
+                            let text = escape_text(&rich::unescape_text(&chars[i..j]));
+                            let sw = fmt_switch(&f, &base);
+                            if sw.is_empty() {
+                                out.push_str(&text);
+                            } else {
+                                let _ = write!(out, "{{{sw}{{}}{text}}}");
+                            }
+                            i = j;
+                        }
+                    }
+                    rich::RunKind::Math { src } => out.push_str(&math(src, false, r.range.start)),
                 }
             }
-            if out.trim().is_empty() { "\\mbox{}".into() } else { out }
+            out
         }
     }
 }
 
-/// Text box body: paragraphs separated by `\\`, or a list for bullets.
-/// Every paragraph starts with `\strut`, matching the editor's baseline
-/// convention.
+/// Text box body. Every line is its own TeX paragraph (so each can have its
+/// own size and indentation) starting with `\strut`, matching the editor's
+/// baseline convention. List labels hang in the indent.
 fn text_body(t: &TextBox) -> String {
     let chars: Vec<char> = t.text.chars().collect();
     let paras = rich::paragraphs(&chars);
-    let mut out = String::new();
-    if t.bullets {
-        // No macro parameters (`#`) here: frame bodies are macro arguments.
-        let indent = bp(t.font_size * typeset::BULLET_INDENT);
-        let _ = write!(
-            out,
-            "\\begin{{list}}{{}}{{\\setlength{{\\leftmargin}}{{{indent}bp}}\\setlength{{\\labelwidth}}{{{indent}bp}}\\setlength{{\\labelsep}}{{0pt}}\\setlength{{\\itemsep}}{{0pt}}\\setlength{{\\parsep}}{{0pt}}\\setlength{{\\topsep}}{{0pt}}\\setlength{{\\partopsep}}{{0pt}}\\setlength{{\\itemindent}}{{0pt}}\\setlength{{\\listparindent}}{{0pt}}}}"
-        );
-        let label = format!("\\item[{{\\makebox[{indent}bp][l]{{\\textbullet}}}}]");
-        for p in &paras {
-            let blank = matches!(&p.kind, rich::ParaKind::Normal(r) if r.iter().all(|r| matches!(r.kind, rich::RunKind::Text) && rich::slice(&chars, &r.range).trim().is_empty()));
-            let bullet = p.starts_line && !blank && !matches!(p.kind, rich::ParaKind::Display { .. });
-            out.push_str(if bullet { &label } else { "\\item[]" });
-            out.push_str("\\strut ");
-            out.push_str(&paragraph_tex(&chars, p));
+    let fmts = t.char_formats();
+    let pfs = t.paras_normalized();
+    let labels = crate::document::list_labels(&pfs);
+    let unit = t.font_size * typeset::BULLET_INDENT;
+    let mut out = String::from("\\parindent=0pt\\parskip=0pt\\relax ");
+    for p in &paras {
+        let pf = pfs.get(p.line).copied().unwrap_or_default();
+        let size = t.font_size * pf.style.size_factor();
+        let list = pf.list != ListKind::None;
+        let indent = f32::from(pf.level) * unit + if list { unit } else { 0.0 };
+        out.push('{');
+        out.push_str(&font_cmd(size));
+        if pf.style.bold() && !t.bold {
+            out.push_str("\\bfseries");
         }
-        out.push_str("\\end{list}");
-        return out;
-    }
-    for (i, p) in paras.iter().enumerate() {
-        if i > 0 {
-            out.push_str("\\\\\\relax ");
+        if pf.style.italic() && !t.italic {
+            out.push_str("\\itshape");
+        }
+        if indent > 0.0 {
+            let _ = write!(out, "\\advance\\leftskip by {}bp\\relax", bp(indent));
         }
         out.push_str("\\strut ");
-        out.push_str(&paragraph_tex(&chars, p));
+        let label = labels.get(p.line).filter(|l| p.starts_line && !l.is_empty());
+        if let Some(l) = label {
+            let glyph = match l.as_str() {
+                "•" => "\\textbullet".to_string(),
+                "–" => "\\textendash".to_string(),
+                "◦" => "\\textopenbullet".to_string(),
+                other => escape_text(other),
+            };
+            let _ = write!(out, "\\llap{{\\makebox[{}bp][l]{{{glyph}}}}}", bp(unit));
+        }
+        out.push_str(&paragraph_tex(t, &chars, &fmts, pf, p));
+        out.push_str("\\par}");
     }
     out
+}
+
+/// Plain text of the first Title paragraph on a slide (PDF bookmark).
+pub fn slide_title(slide: &Slide) -> Option<String> {
+    slide.objects.iter().find_map(|o| match &o.kind {
+        ObjectKind::Text(t) => {
+            let chars: Vec<char> = t.text.chars().collect();
+            rich::paragraphs(&chars).iter().find_map(|p| {
+                (t.para(p.line).style == ParaStyle::Title && p.range.start < p.range.end)
+                    .then(|| rich::unescape_text(&chars[p.range.clone()]).replace('$', ""))
+                    .filter(|s| !s.trim().is_empty())
+            })
+        }
+        _ => None,
+    })
 }
 
 fn text_node(o: &Object, t: &TextBox) -> String {
@@ -328,7 +399,14 @@ fn collect_colors(doc: &Document) -> BTreeSet<(u8, u8, u8)> {
         add(s.background);
         for o in &s.objects {
             match &o.kind {
-                ObjectKind::Text(t) => add(t.color),
+                ObjectKind::Text(t) => {
+                    add(t.color);
+                    for sp in &t.spans {
+                        if let Some(c) = sp.fmt.color {
+                            add(c);
+                        }
+                    }
+                }
                 ObjectKind::Image(_) => {}
                 ObjectKind::Shape(sh) => {
                     add(sh.stroke);
@@ -346,6 +424,8 @@ fn slide_body(slide: &Slide, assets: &HashMap<AssetId, String>) -> String {
     let mut out = String::new();
     for o in &slide.objects {
         out.push_str(&match &o.kind {
+            // Empty placeholders ("Click to add title") are editor-only.
+            ObjectKind::Text(t) if t.text.trim().is_empty() => String::new(),
             ObjectKind::Text(t) => text_node(o, t),
             ObjectKind::Image(i) => image_node(o, assets.get(&i.asset)),
             ObjectKind::Shape(s) => shape_cmd(o, s),
@@ -408,6 +488,15 @@ pub fn generate_tex(doc: &Document, assets: &HashMap<AssetId, String>) -> String
             color_name(slide.background)
         );
         t.push_str("\\begin{frame}[plain]\n");
+        if let Some(title) = slide_title(slide) {
+            // Slide titles become the PDF outline.
+            let _ = writeln!(
+                t,
+                "\\pdfbookmark[1]{{{}}}{{bxslide{}}}",
+                escape_text(title.trim()),
+                n + 1
+            );
+        }
         t.push_str("\\begin{tikzpicture}[remember picture,overlay]\n");
         t.push_str("\\begin{scope}[shift={(current page.north west)},x=1bp,y=-1bp]\n");
         // An invisible anchor keeps empty slides valid.
@@ -556,6 +645,40 @@ mod tests {
     }
 
     #[test]
+    fn rich_text_exports_styles_lists_and_spans() {
+        let mut t = TextBox {
+            text: "Title\nbold red\nsub".into(),
+            font_size: 10.0,
+            ..Default::default()
+        };
+        t.format_lines(0, 0, |p| p.style = ParaStyle::Title);
+        t.format_lines(1, 2, |p| p.list = ListKind::Number);
+        t.format_lines(2, 2, |p| p.level = 1);
+        t.format_range(6, 10, |f| f.bold = Some(true));
+        t.format_range(11, 14, |f| f.color = Some(Color::rgb(255, 0, 0)));
+        let body = text_body(&t);
+        assert!(
+            body.contains("{\\fontsize{18bp}{21.6bp}\\selectfont\\bfseries\\strut Title\\par}"),
+            "{body}"
+        );
+        assert!(
+            body.contains("\\advance\\leftskip by 10bp\\relax\\strut \\llap{\\makebox[10bp][l]{1.}}{\\bfseries{}bold} {\\color{bxff0000}{}red}\\par}"),
+            "{body}"
+        );
+        assert!(
+            body.contains("\\advance\\leftskip by 20bp\\relax\\strut \\llap{\\makebox[10bp][l]{1.}}sub"),
+            "{body}"
+        );
+        let mut slide = Slide::new(SlideId(1));
+        slide.objects.push(Object {
+            id: ObjectId(2),
+            rect: Rect::new(0.0, 0.0, 100.0, 20.0),
+            kind: ObjectKind::Text(t),
+        });
+        assert_eq!(slide_title(&slide).as_deref(), Some("Title"));
+    }
+
+    #[test]
     fn number_formatting() {
         assert_eq!(bp(1.0), "1");
         assert_eq!(bp(1.25), "1.25");
@@ -597,12 +720,16 @@ mod tests {
         assert!(tex.starts_with("% Generated by BeamerX"));
         assert!(tex.contains("\\documentclass[aspectratio=169,11pt]{beamer}"));
         assert!(tex.contains("\\title{T \\& A}"));
-        assert!(tex.contains("at (10,20) {\\strut 50\\% off\\\\\\relax \\strut \\mbox{}\\\\\\relax \\strut \\_x\\_}"));
+        // Each line is its own paragraph with its size and a strut.
+        let f = "\\fontsize{20bp}{24bp}\\selectfont";
+        assert!(tex.contains(&format!(
+            "at (10,20) {{\\parindent=0pt\\parskip=0pt\\relax {{{f}\\strut 50\\% off\\par}}{{{f}\\strut \\par}}{{{f}\\strut \\_x\\_\\par}}}}"
+        )));
         // Inline math passes through; text dollars stay escaped; display
-        // math is centred on its own line.
-        assert!(tex.contains(
-            "{\\strut Energy $\\alpha^2 % note\n$ costs \\$5 \\\\\\relax \\strut \\hspace*{\\fill}$\\displaystyle \\int f\n$\\hspace*{\\fill}\\\\\\relax \\strut  end}"
-        ));
+        // math is centred in its own paragraph.
+        assert!(tex.contains(&format!(
+            "{{{f}\\strut Energy $\\alpha^2 % note\n$ costs \\$5 \\par}}{{{f}\\strut \\hspace*{{\\fill}}$\\displaystyle \\int f\n$\\hspace*{{\\fill}}\\par}}{{{f}\\strut  end\\par}}"
+        )));
         // Missing image becomes a visible placeholder, not a broken \includegraphics.
         assert!(!tex.contains("includegraphics"));
         assert_eq!(tex.matches("\\begin{frame}").count(), 1);

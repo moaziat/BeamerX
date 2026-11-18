@@ -190,14 +190,29 @@ pub fn paint_text(p: &Painter, view: &View, o: &Object, t: &TextBox, sv: &mut Se
     let origin = view.pt(r.x, r.y);
     if t.text.is_empty() {
         if hints {
-            let size = t.font_size * view.scale;
+            // Layout placeholders ("Click to add title") or a plain hint.
+            let size = t.font_size * t.para(0).style.size_factor() * view.scale;
+            let hint = t.placeholder.as_deref().unwrap_or("Click to add text");
+            let x = match t.align {
+                crate::document::TextAlign::Left => origin.x,
+                crate::document::TextAlign::Center => origin.x + r.w * view.scale * 0.5,
+                crate::document::TextAlign::Right => origin.x + r.w * view.scale,
+            };
+            let align = match t.align {
+                crate::document::TextAlign::Left => egui::Align2::LEFT_TOP,
+                crate::document::TextAlign::Center => egui::Align2::CENTER_TOP,
+                crate::document::TextAlign::Right => egui::Align2::RIGHT_TOP,
+            };
             p.text(
-                origin + vec2(0.0, size * 0.1),
-                egui::Align2::LEFT_TOP,
-                "Click to add text",
-                FontId::new(size, text_family(false, true)),
+                egui::pos2(x, origin.y + size * 0.05),
+                align,
+                hint,
+                FontId::new(size * 0.85, text_family(t.para(0).style.bold(), false)),
                 Color32::from_gray(150),
             );
+            if t.placeholder.is_some() {
+                dashed_rect(p, view.rect(r).expand(2.0), Color32::from_gray(170));
+            }
         }
         return;
     }
@@ -259,6 +274,21 @@ fn paint_missing(p: &Painter, dest: egui::Rect, msg: &str) {
             FontId::proportional(11.0),
             red,
         );
+    }
+}
+
+/// Dashed outline (layout placeholders).
+fn dashed_rect(p: &Painter, r: egui::Rect, c: Color32) {
+    let stroke = Stroke::new(1.0, c);
+    let pts = [
+        r.left_top(),
+        r.right_top(),
+        r.right_bottom(),
+        r.left_bottom(),
+        r.left_top(),
+    ];
+    for w in pts.windows(2) {
+        p.extend(egui::Shape::dashed_line(&[w[0], w[1]], stroke, 5.0, 4.0));
     }
 }
 

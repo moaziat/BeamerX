@@ -36,7 +36,7 @@ pub struct Report {
     pub failed: usize,
 }
 
-const STEPS: [&str; 19] = [
+const STEPS: [&str; 23] = [
     "warmup",
     "create_text_by_click",
     "type_text",
@@ -44,6 +44,10 @@ const STEPS: [&str; 19] = [
     "type_on_selected_text",
     "click_selected_text_to_edit",
     "type_inline_math",
+    "double_click_creates_text",
+    "bold_one_word",
+    "tab_demotes_bullet",
+    "title_and_content_layout",
     "insert_shape",
     "drag_text",
     "undo_redo",
@@ -354,6 +358,181 @@ impl Smoke {
                     }
                 }
                 Poll::Wait
+            }
+            "double_click_creates_text" => {
+                // Double-click on empty slide space creates a text box there.
+                let target = (430.0, 240.0);
+                if sub == 0 {
+                    if crate::editor::canvas::hit_test(&app.ed, target, 2.0).is_some() {
+                        return Poll::Fail("test spot is not empty".into());
+                    }
+                    crate::editor::canvas::finish_text_edit(&mut app.ed, &mut app.canvas);
+                    self.count_before = app.ed.slide().objects.len();
+                }
+                let p = view.pt(target.0, target.1);
+                let press = |pressed| Event::PointerButton {
+                    pos: p,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                };
+                match sub {
+                    0 => app.inject_events().push(Event::PointerMoved(p)),
+                    // Let earlier clicks age out of egui's multi-click window.
+                    1..=30 => {}
+                    31 | 33 => app.inject_events().push(press(true)),
+                    32 | 34 => app.inject_events().push(press(false)),
+                    35..=38 => {}
+                    39 => {
+                        if app.ed.slide().objects.len() != self.count_before + 1 || app.ed.editing_text.is_none() {
+                            return Poll::Fail("double-click did not create a text box in edit mode".into());
+                        }
+                        app.inject_events().push(Event::Text("Hi".into()));
+                    }
+                    40 => app.inject_events().push(key(Key::Escape, true)),
+                    _ => {
+                        let last = app.ed.slide().objects.last().cloned();
+                        return match last.map(|o| o.kind) {
+                            Some(ObjectKind::Text(t)) if t.text == "Hi" && app.ed.editing_text.is_none() => Poll::Done,
+                            _ if sub > 30 => Poll::Fail("typed text missing".into()),
+                            _ => Poll::Wait,
+                        };
+                    }
+                }
+                Poll::Wait
+            }
+            "bold_one_word" => {
+                // Double-click a word in the text, press ⌘B: only that word is bold.
+                let Some(id) = self.text_id else {
+                    return Poll::Fail("needs step 1".into());
+                };
+                let Some(o) = app.ed.object(id).cloned() else {
+                    return Poll::Fail("text gone".into());
+                };
+                let p = view.pt(o.rect.x + 12.0, o.rect.y + o.rect.h * 0.3);
+                let press = |pressed| Event::PointerButton {
+                    pos: p,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::NONE,
+                };
+                match sub {
+                    0 => app.inject_events().push(Event::PointerMoved(p)),
+                    1 => app.inject_events().push(press(true)),
+                    2 => app.inject_events().push(press(false)),
+                    // Wait past the double-click window so the next two clicks
+                    // form a double-click of their own.
+                    3..=40 => {}
+                    41 => app.inject_events().push(press(true)),
+                    42 => app.inject_events().push(press(false)),
+                    43 => app.inject_events().push(press(true)),
+                    44 => app.inject_events().push(press(false)),
+                    45..=47 => {}
+                    48 => {
+                        let sel = app.canvas.rich.as_ref().map(|r| r.selection()).unwrap_or((0, 0));
+                        if sel.0 == sel.1 {
+                            return Poll::Fail(format!("double-click did not select a word ({sel:?})"));
+                        }
+                        app.inject_events().push(Event::Key {
+                            key: Key::B,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: Modifiers::COMMAND,
+                        });
+                    }
+                    49..=51 => {}
+                    _ => {
+                        let ObjectKind::Text(t) = &o.kind else {
+                            return Poll::Fail("not text".into());
+                        };
+                        let bold: Vec<bool> = (0..t.char_len()).map(|i| t.resolved_at(i).bold).collect();
+                        let first_word = t.text.chars().take_while(|c| c.is_alphanumeric()).count();
+                        app.inject_events().push(key(Key::Escape, true));
+                        return if bold[..first_word].iter().all(|b| *b) && !bold[first_word..].iter().any(|b| *b) {
+                            Poll::Done
+                        } else {
+                            Poll::Fail(format!("bold map {:?} for {:?}", bold, t.text))
+                        };
+                    }
+                }
+                Poll::Wait
+            }
+            "tab_demotes_bullet" => {
+                let Some(id) = self.text_id else {
+                    return Poll::Fail("needs step 1".into());
+                };
+                match sub {
+                    0..=2 => {}
+                    3 => {
+                        crate::editor::canvas::begin_text_edit(
+                            &mut app.ed,
+                            &mut app.canvas,
+                            id,
+                            crate::editor::text_edit::Caret::End,
+                        );
+                    }
+                    4..=6 => {}
+                    7 => {
+                        crate::editor::text_edit::toggle_list(
+                            &mut app.ed,
+                            &mut app.canvas.rich,
+                            crate::document::ListKind::Bullet,
+                        );
+                        crate::editor::text_edit::refocus(ctx, &app.ed);
+                    }
+                    8 => app.inject_events().push(key(Key::Tab, true)),
+                    9..=11 => {}
+                    _ => {
+                        let Some(ObjectKind::Text(t)) = app.ed.object(id).map(|o| o.kind.clone()) else {
+                            return Poll::Fail("text gone".into());
+                        };
+                        let p = t.para(0);
+                        app.inject_events().push(key(Key::Escape, true));
+                        return if p.list == crate::document::ListKind::Bullet && p.level == 1 {
+                            Poll::Done
+                        } else {
+                            Poll::Fail(format!("paragraph is {p:?}"))
+                        };
+                    }
+                }
+                Poll::Wait
+            }
+            "title_and_content_layout" => {
+                if sub == 0 {
+                    crate::editor::canvas::finish_text_edit(&mut app.ed, &mut app.canvas);
+                    app.on_action(MenuAction::NewSlide);
+                    return Poll::Wait;
+                }
+                let s = app.ed.slide();
+                let titles = s
+                    .objects
+                    .iter()
+                    .filter(|o| matches!(&o.kind, ObjectKind::Text(t) if t.placeholder.is_some() && t.para(0).style == crate::document::ParaStyle::Title))
+                    .count();
+                let bodies = s
+                    .objects
+                    .iter()
+                    .filter(|o| matches!(&o.kind, ObjectKind::Text(t) if t.para(0).list == crate::document::ListKind::Bullet))
+                    .count();
+                // Placeholders survive an edit session that leaves them empty.
+                let first = s.objects[0].id;
+                crate::editor::canvas::begin_text_edit(
+                    &mut app.ed,
+                    &mut app.canvas,
+                    first,
+                    crate::editor::text_edit::Caret::End,
+                );
+                crate::editor::canvas::finish_text_edit(&mut app.ed, &mut app.canvas);
+                let kept = app.ed.slide().objects.len() == 2;
+                // Back to the first slide for the remaining steps.
+                app.ed.undo();
+                app.ed.go_to_slide(0);
+                if titles == 1 && bodies == 1 && kept {
+                    Poll::Done
+                } else {
+                    Poll::Fail(format!("titles {titles}, bodies {bodies}, kept {kept}"))
+                }
             }
             "insert_shape" => {
                 let n = app.ed.slide().objects.len();

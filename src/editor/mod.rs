@@ -7,6 +7,7 @@
 
 pub mod canvas;
 pub mod inspector;
+pub mod layouts;
 pub mod slides_panel;
 pub mod text_edit;
 
@@ -532,6 +533,14 @@ impl Editor {
 
     pub fn new_slide(&mut self) {
         let slide = Slide::new(self.doc.alloc_slide_id());
+        let index = self.current + 1;
+        self.exec(Command::InsertSlide { index, slide });
+        self.go_to_slide(index);
+    }
+
+    /// Insert a slide with a layout after the current one.
+    pub fn new_slide_with(&mut self, layout: layouts::Layout) {
+        let slide = layouts::new_slide(&mut self.doc, layout);
         let index = self.current + 1;
         self.exec(Command::InsertSlide { index, slide });
         self.go_to_slide(index);

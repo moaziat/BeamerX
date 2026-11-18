@@ -1,9 +1,10 @@
 //! Application shell: panels, menus, dialogs and background jobs.
 
 use crate::assets::{AssetMeta, AssetStore};
-use crate::document::{Document, ImageRef, Object, ObjectKind, Rect, SLIDE_H, SLIDE_W, SlideId};
+use crate::document::{ImageRef, Object, ObjectKind, Rect, SLIDE_H, SLIDE_W, SlideId};
 use crate::editor::canvas::{self, CanvasRequest, CanvasState};
-use crate::editor::text_edit::Caret;
+use crate::editor::layouts::Layout;
+use crate::editor::text_edit::{self, Caret};
 use crate::editor::{Editor, Tool, Zoom, inspector, slides_panel};
 use crate::jobs::WorkerPool;
 use crate::latex::Toolchain;
@@ -153,7 +154,7 @@ impl BeamerApp {
         };
         let (io_tx, io_rx) = channel();
         let mut app = Self {
-            ed: Editor::new(Document::new(), None),
+            ed: Editor::new(crate::editor::layouts::new_presentation(), None),
             canvas: CanvasState::default(),
             assets,
             textures: TextureCache::new(ctx.clone(), renderer::textures::DEFAULT_BUDGET),
@@ -283,7 +284,7 @@ impl BeamerApp {
     }
 
     pub fn new_document(&mut self) {
-        self.reset_session(Editor::new(Document::new(), None));
+        self.reset_session(Editor::new(crate::editor::layouts::new_presentation(), None));
     }
 
     pub fn snapshot(&self) -> SaveSnapshot {
@@ -735,7 +736,7 @@ impl BeamerApp {
             A::BringForward => self.ed.z_order(crate::editor::ZOrder::Forward),
             A::SendBackward => self.ed.z_order(crate::editor::ZOrder::Backward),
             A::SendToBack => self.ed.z_order(crate::editor::ZOrder::Back),
-            A::NewSlide => self.ed.new_slide(),
+            A::NewSlide => self.ed.new_slide_with(Layout::TitleAndContent),
             A::DuplicateSlide => self.ed.duplicate_slide(),
             A::DeleteSlide => self.ed.delete_slide(),
             A::MoveSlideUp => {
@@ -997,16 +998,21 @@ impl BeamerApp {
         });
         ui.add_space(2.0);
         // Ribbon body.
-        ui.horizontal_top(|ui| {
-            ui.set_height(RIBBON_H);
-            match self.tab {
-                RibbonTab::Home => self.tab_home(ui, &mut insert_image),
-                RibbonTab::Insert => self.tab_insert(ui, &mut insert_image),
-                RibbonTab::Design => self.tab_design(ui),
-                RibbonTab::Arrange => self.tab_arrange(ui),
-                RibbonTab::SlideShow => self.tab_slideshow(ui),
-                RibbonTab::View => self.tab_view(ui),
-            }
+        // Labels never wrap (a narrow window would otherwise stack them one
+        // character per line); the ribbon scrolls sideways instead.
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+        egui::ScrollArea::horizontal().id_salt("ribbon-body").show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.set_height(RIBBON_H);
+                match self.tab {
+                    RibbonTab::Home => self.tab_home(ui, &mut insert_image),
+                    RibbonTab::Insert => self.tab_insert(ui, &mut insert_image),
+                    RibbonTab::Design => self.tab_design(ui),
+                    RibbonTab::Arrange => self.tab_arrange(ui),
+                    RibbonTab::SlideShow => self.tab_slideshow(ui),
+                    RibbonTab::View => self.tab_view(ui),
+                }
+            });
         });
         insert_image
     }
@@ -1023,40 +1029,25 @@ impl BeamerApp {
                 if ui.small_button("Copy").clicked() {
                     self.on_action(MenuAction::Copy);
                 }
-                if ui.small_button("Duplicate").clicked() {
-                    self.ed.duplicate_selection();
-                }
             });
         });
         group(ui, "Slides", |ui| {
-            if big(ui, "New\nSlide").clicked() {
-                self.ed.new_slide();
-            }
-            ui.vertical(|ui| {
-                if ui.small_button("Duplicate").clicked() {
-                    self.ed.duplicate_slide();
-                }
-                if ui.small_button("Delete").clicked() {
-                    self.ed.delete_slide();
-                }
-            });
+            self.new_slide_buttons(ui);
         });
         self.font_group(ui);
         self.paragraph_group(ui);
         group(ui, "Drawing", |ui| {
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    self.tool_button(ui, "Text Box", Tool::Text);
-                    self.tool_button(ui, "Rectangle", Tool::Shape(ShapeKind::Rectangle));
-                    self.tool_button(ui, "Oval", Tool::Shape(ShapeKind::Ellipse));
-                });
-                ui.horizontal(|ui| {
-                    self.tool_button(ui, "Line", Tool::Shape(ShapeKind::Line));
-                    self.tool_button(ui, "Arrow", Tool::Shape(ShapeKind::Arrow));
-                    if ui.small_button("Picture…").clicked() {
-                        *insert_image = true;
-                    }
-                });
+            egui::Grid::new("draw-tools").spacing([2.0, 2.0]).show(ui, |ui| {
+                self.tool_button(ui, "Text Box", Tool::Text);
+                self.tool_button(ui, "Rectangle", Tool::Shape(ShapeKind::Rectangle));
+                self.tool_button(ui, "Oval", Tool::Shape(ShapeKind::Ellipse));
+                ui.end_row();
+                self.tool_button(ui, "Line", Tool::Shape(ShapeKind::Line));
+                self.tool_button(ui, "Arrow", Tool::Shape(ShapeKind::Arrow));
+                if ui.small_button("Picture…").clicked() {
+                    *insert_image = true;
+                }
+                ui.end_row();
             });
             self.shape_style(ui);
         });
@@ -1075,9 +1066,6 @@ impl BeamerApp {
                 }
                 if ui.small_button("Send to Back").clicked() {
                     self.ed.z_order(crate::editor::ZOrder::Back);
-                }
-                if ui.small_button("Select All").clicked() {
-                    self.on_action(MenuAction::SelectAll);
                 }
             });
         });
@@ -1101,14 +1089,48 @@ impl BeamerApp {
         }
     }
 
+    /// "New Slide" (Title and Content) plus a layout menu, as in PowerPoint.
+    fn new_slide_buttons(&mut self, ui: &mut egui::Ui) {
+        if big(ui, "New\nSlide")
+            .on_hover_text("New slide with title and content (⇧⌘N)")
+            .clicked()
+        {
+            self.ed.new_slide_with(Layout::TitleAndContent);
+        }
+        ui.vertical(|ui| {
+            ui.menu_button("Layout", |ui| {
+                for l in Layout::ALL {
+                    if ui.button(l.label()).clicked() {
+                        self.ed.new_slide_with(l);
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text("New slide with a layout");
+            if ui.small_button("Duplicate").clicked() {
+                self.ed.duplicate_slide();
+            }
+            if ui.small_button("Delete").clicked() {
+                self.ed.delete_slide();
+            }
+        });
+    }
+
     fn font_group(&mut self, ui: &mut egui::Ui) {
         let style = self.ed.selected_text_style();
+        let cur = text_edit::current_char(&self.ed, &self.canvas.rich);
+        let ctx = ui.ctx().clone();
         group(ui, "Font", |ui| {
             ui.add_enabled_ui(style.is_some(), |ui| {
                 let mut t = style.clone().unwrap_or_default();
+                let cur = cur.unwrap_or(crate::document::Resolved {
+                    bold: false,
+                    italic: false,
+                    color: t.color,
+                });
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Latin Modern Sans").small());
                         if inspector::font_size_edit(ui, &mut t.font_size) {
                             let v = t.font_size;
                             self.ed.update_selected_text(0, |x| x.font_size = v);
@@ -1125,26 +1147,27 @@ impl BeamerApp {
                         }
                     });
                     ui.horizontal(|ui| {
+                        let tip = "selection, word at the caret, or what you type next";
                         if ui
-                            .selectable_label(t.bold, RichText::new(" B ").strong())
-                            .on_hover_text("Bold")
+                            .selectable_label(cur.bold, RichText::new(" B ").strong())
+                            .on_hover_text(format!("Bold (⌘B): {tip}"))
                             .clicked()
                         {
-                            let v = !t.bold;
-                            self.ed.update_selected_text(1, |x| x.bold = v);
+                            text_edit::toggle_style(&mut self.ed, &mut self.canvas.rich, 0);
+                            text_edit::refocus(&ctx, &self.ed);
                         }
                         if ui
-                            .selectable_label(t.italic, RichText::new(" I ").italics())
-                            .on_hover_text("Italic")
+                            .selectable_label(cur.italic, RichText::new(" I ").italics())
+                            .on_hover_text(format!("Italic (⌘I): {tip}"))
                             .clicked()
                         {
-                            let v = !t.italic;
-                            self.ed.update_selected_text(2, |x| x.italic = v);
+                            text_edit::toggle_style(&mut self.ed, &mut self.canvas.rich, 1);
+                            text_edit::refocus(&ctx, &self.ed);
                         }
                         ui.label(RichText::new("Color").small());
-                        if inspector::color_edit(ui, &mut t.color) {
-                            let v = t.color;
-                            self.ed.update_selected_text(3, |x| x.color = v);
+                        let mut c = cur.color;
+                        if inspector::color_edit(ui, &mut c) {
+                            text_edit::set_color(&mut self.ed, &mut self.canvas.rich, c);
                         }
                     });
                 });
@@ -1153,26 +1176,76 @@ impl BeamerApp {
     }
 
     fn paragraph_group(&mut self, ui: &mut egui::Ui) {
+        use crate::document::{ListKind, ParaStyle, TextAlign};
         let style = self.ed.selected_text_style();
+        let para = text_edit::current_para(&self.ed, &self.canvas.rich).unwrap_or_default();
+        let ctx = ui.ctx().clone();
         group(ui, "Paragraph", |ui| {
             ui.add_enabled_ui(style.is_some(), |ui| {
                 let t = style.clone().unwrap_or_default();
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(para.list == ListKind::Bullet, "• Bullets")
+                            .clicked()
+                        {
+                            text_edit::toggle_list(&mut self.ed, &mut self.canvas.rich, ListKind::Bullet);
+                            text_edit::refocus(&ctx, &self.ed);
+                        }
+                        if ui
+                            .selectable_label(para.list == ListKind::Number, "1. Numbering")
+                            .clicked()
+                        {
+                            text_edit::toggle_list(&mut self.ed, &mut self.canvas.rich, ListKind::Number);
+                            text_edit::refocus(&ctx, &self.ed);
+                        }
+                        if ui
+                            .small_button("Outdent")
+                            .on_hover_text("Decrease list level (⇧Tab)")
+                            .clicked()
+                        {
+                            text_edit::shift_level(&mut self.ed, &mut self.canvas.rich, -1);
+                            text_edit::refocus(&ctx, &self.ed);
+                        }
+                        if ui
+                            .small_button("Indent")
+                            .on_hover_text("Increase list level (Tab)")
+                            .clicked()
+                        {
+                            text_edit::shift_level(&mut self.ed, &mut self.canvas.rich, 1);
+                            text_edit::refocus(&ctx, &self.ed);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        // Paragraph style: titles and headings.
+                        let mut chosen = None;
+                        egui::ComboBox::from_id_salt("para-style")
+                            .selected_text(para.style.label())
+                            .width(92.0)
+                            .show_ui(ui, |ui| {
+                                for st in ParaStyle::ALL {
+                                    if ui.selectable_label(para.style == st, st.label()).clicked() {
+                                        chosen = Some(st);
+                                    }
+                                }
+                            })
+                            .response
+                            .on_hover_text("Paragraph style (Title, Subtitle, Headings, Body)");
+                        if let Some(st) = chosen {
+                            text_edit::update_paras(&mut self.ed, &mut self.canvas.rich, |p| p.style = st);
+                            text_edit::refocus(&ctx, &self.ed);
+                        }
                         for (a, label) in [
-                            (crate::document::TextAlign::Left, "Left"),
-                            (crate::document::TextAlign::Center, "Center"),
-                            (crate::document::TextAlign::Right, "Right"),
+                            (TextAlign::Left, "Left"),
+                            (TextAlign::Center, "Center"),
+                            (TextAlign::Right, "Right"),
                         ] {
                             if ui.selectable_label(t.align == a, label).clicked() {
                                 self.ed.update_selected_text(4, |x| x.align = a);
+                                text_edit::refocus(&ctx, &self.ed);
                             }
                         }
                     });
-                    if ui.selectable_label(t.bullets, "• Bullets").clicked() {
-                        let v = !t.bullets;
-                        self.ed.update_selected_text(5, |x| x.bullets = v);
-                    }
                 });
             });
         });
@@ -1226,9 +1299,7 @@ impl BeamerApp {
 
     fn tab_insert(&mut self, ui: &mut egui::Ui, insert_image: &mut bool) {
         group(ui, "Slides", |ui| {
-            if big(ui, "New\nSlide").clicked() {
-                self.ed.new_slide();
-            }
+            self.new_slide_buttons(ui);
         });
         group(ui, "Text", |ui| {
             if big(ui, "Text\nBox")

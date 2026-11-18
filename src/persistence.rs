@@ -26,7 +26,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 pub const FORMAT_NAME: &str = "beamerx";
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 pub const MIMETYPE: &str = "application/x-beamerx";
 pub const EXTENSION: &str = "beamerx";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -147,6 +147,10 @@ fn migrate(mut v: Value) -> Result<Value> {
         migrate_v1_to_v2(&mut v);
         ver = 2;
     }
+    if ver == 2 {
+        migrate_v2_to_v3(&mut v);
+        ver = 3;
+    }
     v["format_version"] = ver.into();
     Ok(v)
 }
@@ -179,6 +183,35 @@ fn migrate_v1_to_v2(v: &mut Value) {
             obj.insert("text".into(), format!("$\\displaystyle {}$", source.trim()).into());
             obj.insert("font_size".into(), font_size);
             obj.insert("color".into(), color);
+        }
+    }
+}
+
+/// Format 3 replaced the box-wide `bullets` flag with per-paragraph
+/// formats (lists, levels, styles) and added character spans.
+fn migrate_v2_to_v3(v: &mut Value) {
+    let Some(slides) = v.pointer_mut("/document/slides").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for slide in slides {
+        let Some(objects) = slide.get_mut("objects").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for o in objects {
+            if o.get("type").and_then(Value::as_str) != Some("text") {
+                continue;
+            }
+            let Some(obj) = o.as_object_mut() else { continue };
+            let bullets = obj.remove("bullets").and_then(|b| b.as_bool()).unwrap_or(false);
+            if bullets {
+                let lines = obj
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(|t| t.split('\n').count())
+                    .unwrap_or(1);
+                let para = serde_json::json!({ "list": "bullet" });
+                obj.insert("paras".into(), Value::Array(vec![para; lines]));
+            }
         }
     }
 }
@@ -424,6 +457,34 @@ mod tests {
         let loaded = load_package(&out, other.dir()).unwrap();
         assert!(loaded.assets.is_empty());
         assert_eq!(loaded.warnings.len(), 2, "{:?}", loaded.warnings);
+    }
+
+    #[test]
+    fn v2_bullets_become_paragraph_lists() {
+        let snap = SaveSnapshot {
+            doc: Document::new(),
+            assets: vec![],
+        };
+        let mut v = serde_json::to_value(Manifest {
+            format: FORMAT_NAME.into(),
+            format_version: 2,
+            app_version: "0.1.0".into(),
+            document: snap.doc,
+            assets: vec![],
+        })
+        .unwrap();
+        v["document"]["slides"][0]["objects"] = serde_json::json!([{
+            "id": 900, "rect": {"x": 0.0, "y": 0.0, "w": 100.0, "h": 20.0}, "type": "text",
+            "text": "one\ntwo\nthree", "font_size": 18.0, "color": "#000000", "bullets": true
+        }]);
+        let (doc, _) = parse_manifest(&serde_json::to_vec(&v).unwrap()).unwrap();
+        match &doc.slides[0].objects[0].kind {
+            ObjectKind::Text(t) => {
+                assert_eq!(t.paras.len(), 3);
+                assert!(t.paras.iter().all(|p| p.list == ListKind::Bullet && p.level == 0));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

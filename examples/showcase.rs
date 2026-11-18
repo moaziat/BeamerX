@@ -34,20 +34,35 @@ fn main() -> anyhow::Result<()> {
         rect: Rect::new(24.0, 18.0, 405.0, 34.0),
         kind: ObjectKind::Text(TextBox {
             text: "Gaussian integrals in practice".into(),
-            font_size: 24.0,
-            bold: true,
+            font_size: 15.0,
             color: Color::ACCENT,
+            paras: vec![ParaFmt {
+                style: ParaStyle::Title,
+                ..Default::default()
+            }],
             ..Default::default()
         }),
     });
     objs.push(Object {
         id: next(),
         rect: Rect::new(24.0, 64.0, 200.0, 80.0),
-        kind: ObjectKind::Text(TextBox {
-            text: "Closed form for the Gaussian\nWorks in any dimension n\nUsed in statistics & physics".into(),
-            font_size: 12.0,
-            bullets: true,
-            ..Default::default()
+        kind: ObjectKind::Text({
+            let mut t = TextBox {
+                text: "Closed form for the Gaussian\nWorks in any dimension $n$\nAlso for complex $a$\nUsed in statistics & physics\nCompute the moments\nNormalize".into(),
+                font_size: 12.0,
+                ..Default::default()
+            };
+            t.format_lines(0, 3, |p| p.list = ListKind::Bullet);
+            t.format_lines(2, 2, |p| p.level = 1);
+            t.format_lines(4, 5, |p| p.list = ListKind::Number);
+            t.format_lines(4, 5, |p| p.level = 1);
+            // "Closed form" bold, "Gaussian" coloured, "statistics" italic.
+            t.format_range(0, 11, |f| f.bold = Some(true));
+            t.format_range(20, 28, |f| f.color = Some(Color::rgb(200, 30, 30)));
+            let i = t.text.find("statistics").unwrap();
+            let ci = t.text[..i].chars().count();
+            t.format_range(ci, ci + 10, |f| f.italic = Some(true));
+            t
         }),
     });
     objs.push(Object {

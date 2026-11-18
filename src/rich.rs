@@ -41,6 +41,9 @@ pub struct Paragraph {
     /// opposed to continuing after a display block. Bullets are drawn only
     /// for these.
     pub starts_line: bool,
+    /// Index of the `\n`-separated line this paragraph belongs to (selects
+    /// the paragraph format).
+    pub line: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,6 +127,7 @@ pub fn paragraphs(chars: &[char]) -> Vec<Paragraph> {
             kind: ParaKind::Normal(std::mem::take(runs)),
             range: start..end,
             starts_line,
+            line: 0,
         });
     };
     for seg in segments(chars) {
@@ -177,6 +181,7 @@ pub fn paragraphs(chars: &[char]) -> Vec<Paragraph> {
                     kind: ParaKind::Display { src },
                     range: range.clone(),
                     starts_line,
+                    line: 0,
                 });
                 start = range.end;
                 starts_line = false;
@@ -189,6 +194,19 @@ pub fn paragraphs(chars: &[char]) -> Vec<Paragraph> {
     let n = chars.len();
     if !runs.is_empty() || (starts_line && !after_display) || paras.is_empty() {
         flush(&mut paras, &mut runs, start, n, starts_line);
+    }
+    // Line index of each paragraph = newlines before it.
+    let mut prefix = Vec::with_capacity(n + 1);
+    let mut count = 0usize;
+    prefix.push(0);
+    for c in chars {
+        if *c == '\n' {
+            count += 1;
+        }
+        prefix.push(count);
+    }
+    for p in &mut paras {
+        p.line = prefix[p.range.start.min(n)];
     }
     paras
 }
@@ -285,6 +303,13 @@ mod tests {
         assert_eq!(ps[2].range, 4..6);
         assert_eq!(ps[3].range, 7..7);
         assert_eq!(paras("").1.len(), 1);
+    }
+
+    #[test]
+    fn paragraphs_know_their_line() {
+        let (_, ps) = paras("a\nb $$x$$ c\n\nd");
+        let lines: Vec<usize> = ps.iter().map(|p| p.line).collect();
+        assert_eq!(lines, [0, 1, 1, 1, 2, 3]);
     }
 
     #[test]

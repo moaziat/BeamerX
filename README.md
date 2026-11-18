@@ -39,11 +39,23 @@ Arrange, Slide Show, View) at the top, slide thumbnails on the left, the slide
 in the middle, zoom at the bottom right. *Arrange › Format Pane* opens an
 optional pane with exact position, size, colours and picture details.
 
-* **Text** — *Text Box* (Home or Insert, or `T`), then click on the slide and
-  type. Click any text box to put the caret there; select a box and just start
-  typing to add to it. `Esc` or clicking elsewhere finishes; empty boxes are
-  removed. Font size, bold, italic, colour, alignment and bullets are in
-  *Home › Font / Paragraph* (they apply to the whole box).
+* **Text** — double-click empty space on the slide, or *Text Box* (Home or
+  Insert, or `T`) and click, then type. Click any text box to put the caret
+  there; select a box and just start typing to add to it. Double-click selects
+  a word, triple-click a paragraph. `Esc` or clicking elsewhere finishes; empty
+  boxes are removed (layout placeholders stay).
+* **Formatting** — **bold** (`⌘B`), *italic* (`⌘I`) and colour apply to the
+  selected characters, the word at the caret, or what you type next (*Home ›
+  Font*). Font size and alignment apply to the box.
+* **Titles and hierarchy** — *Home › Paragraph › Style*: Title, Subtitle,
+  Heading 1, Heading 2, Body (per paragraph). Bullets and numbering per
+  paragraph with five outline levels: `Tab` / `⇧Tab` (or Indent / Outdent)
+  demote and promote; `⌫` at the start of an item promotes it, then ends the
+  list. Numbers restart per level automatically.
+* **Slide layouts** — *New Slide* adds Title and Content; *Layout* offers Title
+  Slide, Title and Content, Section Header, Two Content, Title Only and Blank.
+  Placeholders ("Click to add title") disappear from the export until filled;
+  slide titles become the PDF outline (bookmarks).
 * **Math** — write LaTeX math inside any text box exactly as in LaTeX:
   `The energy $E = mc^2$ is…` renders inline as soon as the closing `$` is
   typed; `$$\int_0^1 f(x)\,dx$$` is a centred display formula; `\$` is a
@@ -81,9 +93,10 @@ A ZIP container: `mimetype`, a versioned `project.json` (document + asset
 manifest) and the **original image bytes** under `assets/<sha256>.<ext>`
 (stored, not recompressed, de-duplicated by content hash). No base64 in JSON.
 Saves are atomic (temp file → fsync → rename); a failed save never damages the
-previous file. Format 2 stores math inside text boxes; format-1 files (which
-had separate equation objects) are converted on open into text boxes containing
-`$\displaystyle …$`. Loading validates structure, bounds sizes, never uses archive
+previous file. Format 3 stores character formats as spans and paragraph
+formats (style, list, level) per line. Older files are migrated on open:
+format-1 equation objects become text boxes containing `$\displaystyle …$`,
+and format-2 box-wide bullets become per-paragraph bullets. Loading validates structure, bounds sizes, never uses archive
 entry names as paths, and verifies every image against its hash. Format
 changes go through `persistence::migrate` with frozen fixtures in
 `tests/fixtures`.
@@ -100,10 +113,13 @@ placed absolutely with TikZ, so positions and sizes match the editor exactly.
   baseline using the depth TeX measures, and are never split across lines in
   either place.
 * **Text** uses Latin Modern Sans in both the editor (bundled font) and
-  Beamer's default text font. Line positions follow the same baseline
-  convention (`\strut`, 1.2 × size line spacing). Line breaks can occasionally
-  differ: TeX uses optimal-fit breaking and kerning tables; the editor uses
-  greedy wrapping.
+  Beamer's default text font. Every line is its own TeX paragraph with its own
+  size, outline indent (`\leftskip`) and hanging list label, following the same
+  baseline convention as the editor (`\strut`, 1.2 × size line spacing, TeX's
+  `\lineskip` rule for tall math). Bold/italic/colour runs become
+  `\bfseries`/`\itshape`/`\color` groups. Line breaks can occasionally differ:
+  TeX uses optimal-fit breaking and kerning tables; the editor uses greedy
+  wrapping.
 * Math is serif (`\usefonttheme[onlymath]{serif}`), as in the preview.
 * Colours with transparency are exported with TikZ opacity.
 * The exported `main.tex` compiles with Tectonic in one command, or with
@@ -112,7 +128,8 @@ placed absolutely with TikZ, so positions and sizes match the editor exactly.
 
 ## Known limitations
 
-* Text formatting is per text box (no mixed bold/italic inside one box).
+* Font size is per text box (scaled per paragraph by its style); there is no
+  per-word size, underline or font family choice yet.
 * Math previews ignore colour commands inside the source (`\color`); the text
   colour applies to the whole formula (export honours inline colours).
 * Plain text outside `$…$` is literal: LaTeX commands there are printed, not
@@ -167,7 +184,7 @@ cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all                       # LaTeX integration tests need tectonic
 cargo run --example showcase -- out/   # sample deck + Beamer + PDF + PNGs
-cargo run --release -- --bench smoke   # end-to-end UI workflow (19 steps)
+cargo run --release -- --bench smoke   # end-to-end UI workflow (23 steps)
 scripts/measure.sh                     # performance measurements
 ```
 

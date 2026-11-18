@@ -1,14 +1,16 @@
 //! In-place text editing on the slide (PowerPoint-style).
 //!
-//! The text box is edited where it sits, in its real font and size, with
+//! The text box is edited where it sits, in its real fonts and sizes, with
 //! LaTeX math rendered live: a `$…$` pair renders as soon as it is closed,
 //! and the formula under the caret shows its source so it can be edited.
-//! Text changes go through the undoable command history (consecutive typing
-//! merges into one undo step).
+//! Character formats (bold, italic, colour) apply to the selection, the word
+//! at the caret, or what is typed next; paragraph formats (style, list,
+//! outline level) apply to the lines touched by the selection. Every change
+//! goes through the undoable command history (typing merges into one step).
 
 use super::Editor;
 use crate::commands::MergeKey;
-use crate::document::{ObjectId, ObjectKind, Rect, typeset};
+use crate::document::{CharFmt, ListKind, MAX_LEVEL, ObjectId, ObjectKind, ParaFmt, Rect, Resolved, TextBox, typeset};
 use crate::renderer::{self, Services, View, text_layout};
 use egui::{Color32, Event, EventFilter, Key, Modifiers, Pos2, Sense, Stroke, StrokeKind, Ui, vec2};
 use std::time::{Duration, Instant};
@@ -33,8 +35,12 @@ pub struct RichEdit {
     pub id: ObjectId,
     pub caret: usize,
     pub anchor: usize,
+    /// Format for the next typed chars (set by Bold etc. with no selection).
+    pub typing: Option<CharFmt>,
     start: Option<Caret>,
     preferred_x: Option<f32>,
+    /// Time and position of the last press (multi-click detection).
+    last_press: Option<(f64, Pos2)>,
     settle: u32,
     blink: Instant,
 }
@@ -45,14 +51,16 @@ impl RichEdit {
             id,
             caret: 0,
             anchor: 0,
+            typing: None,
             start: Some(start),
             preferred_x: None,
+            last_press: None,
             settle: 0,
             blink: Instant::now(),
         }
     }
 
-    fn selection(&self) -> (usize, usize) {
+    pub fn selection(&self) -> (usize, usize) {
         (self.caret.min(self.anchor), self.caret.max(self.anchor))
     }
 
@@ -73,15 +81,6 @@ pub enum Outcome {
 }
 
 // ---- text operations on char indices -------------------------------------
-
-fn char_to_byte(s: &str, ci: usize) -> usize {
-    s.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(s.len())
-}
-
-fn replace_range(s: &mut String, a: usize, b: usize, with: &str) {
-    let (ba, bb) = (char_to_byte(s, a), char_to_byte(s, b));
-    s.replace_range(ba..bb, with);
-}
 
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -126,17 +125,72 @@ fn word_at(chars: &[char], i: usize) -> (usize, usize) {
     }
 }
 
-/// Insert `text` at the caret, replacing the selection.
-pub fn insert(text: &mut String, st: &mut RichEdit, ins: &str) {
+/// Word strictly around the caret (caret inside, not at its edges).
+fn word_inside(chars: &[char], i: usize) -> Option<(usize, usize)> {
+    let n = chars.len();
+    (i > 0 && i < n && is_word(chars[i - 1]) && is_word(chars[i])).then(|| word_at(chars, i))
+}
+
+/// Insert `ins` at the caret, replacing the selection.
+pub fn insert(tb: &mut TextBox, st: &mut RichEdit, ins: &str) {
     let (a, b) = st.selection();
-    replace_range(text, a, b, ins);
+    tb.replace(a, b, ins, st.typing);
     st.caret = a + ins.chars().count();
     st.anchor = st.caret;
 }
 
-/// Apply editing events to `text`. Returns (changed, finished).
+/// Lines touched by the selection.
+fn selected_lines(tb: &TextBox, st: &RichEdit) -> (usize, usize) {
+    let (a, b) = st.selection();
+    (tb.line_of(a), tb.line_of(b))
+}
+
+/// Change the outline level of the selected lines by `delta`.
+fn change_level(tb: &mut TextBox, st: &RichEdit, delta: i8) {
+    let (l0, l1) = selected_lines(tb, st);
+    tb.format_lines(l0, l1, |p| {
+        p.level = (i16::from(p.level) + i16::from(delta)).clamp(0, i16::from(MAX_LEVEL)) as u8;
+    });
+}
+
+/// Toggle a character attribute: on the selection, else the word at the
+/// caret, else for the next typed chars. `get`/`set` select the attribute.
+fn toggle_char(tb: &mut TextBox, st: &mut RichEdit, get: fn(&Resolved) -> bool, set: fn(&mut CharFmt, bool)) {
+    let chars: Vec<char> = tb.text.chars().collect();
+    let (a, b) = if st.has_selection() {
+        st.selection()
+    } else {
+        word_inside(&chars, st.caret).unwrap_or((st.caret, st.caret))
+    };
+    if a < b {
+        let on = !get(&tb.resolved_at(a));
+        tb.format_range(a, b, |f| set(f, on));
+    } else {
+        let cur = typing_resolved(tb, st);
+        let mut f = st.typing.unwrap_or_else(|| char_fmt_before(tb, st.caret));
+        set(&mut f, !get(&cur));
+        st.typing = Some(f);
+    }
+}
+
+fn char_fmt_before(tb: &TextBox, i: usize) -> CharFmt {
+    let fm = tb.char_formats();
+    if i > 0 {
+        fm.get(i - 1).copied().unwrap_or_default()
+    } else {
+        fm.first().copied().unwrap_or_default()
+    }
+}
+
+/// Appearance the next typed char would have.
+fn typing_resolved(tb: &TextBox, st: &RichEdit) -> Resolved {
+    let f = st.typing.unwrap_or_else(|| char_fmt_before(tb, st.caret));
+    tb.resolve(f, tb.para(tb.line_of(st.caret)))
+}
+
+/// Apply editing events to `tb`. Returns (changed, finished).
 fn apply_events(
-    text: &mut String,
+    tb: &mut TextBox,
     st: &mut RichEdit,
     events: &[Event],
     lay: &text_layout::TextLayout,
@@ -145,7 +199,7 @@ fn apply_events(
     let mut changed = false;
     let mut finished = false;
     for ev in events {
-        let chars: Vec<char> = text.chars().collect();
+        let chars: Vec<char> = tb.text.chars().collect();
         let n = chars.len();
         st.caret = st.caret.min(n);
         st.anchor = st.anchor.min(n);
@@ -153,13 +207,13 @@ fn apply_events(
             Event::Text(t) | Event::Ime(egui::ImeEvent::Commit(t)) => {
                 let t: String = t.chars().filter(|c| !c.is_control() || *c == '\n').collect();
                 if !t.is_empty() {
-                    insert(text, st, &t);
+                    insert(tb, st, &t);
                     changed = true;
                 }
             }
             Event::Paste(t) => {
                 let t = t.replace("\r\n", "\n").replace('\r', "\n");
-                insert(text, st, &t);
+                insert(tb, st, &t);
                 changed = true;
             }
             Event::Copy | Event::Cut => {
@@ -167,7 +221,7 @@ fn apply_events(
                 if a < b {
                     ctx.copy_text(chars[a..b].iter().collect());
                     if matches!(ev, Event::Cut) {
-                        insert(text, st, "");
+                        insert(tb, st, "");
                         changed = true;
                     }
                 }
@@ -179,6 +233,13 @@ fn apply_events(
                 ..
             } => {
                 let m: Modifiers = *modifiers;
+                let moving = matches!(
+                    key,
+                    Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown | Key::Home | Key::End
+                );
+                if moving {
+                    st.typing = None;
+                }
                 let mv = |st: &mut RichEdit, to: usize| {
                     st.caret = to.min(n);
                     if !m.shift {
@@ -188,12 +249,37 @@ fn apply_events(
                 match key {
                     Key::Escape => finished = true,
                     Key::Enter => {
-                        insert(text, st, "\n");
+                        insert(tb, st, "\n");
+                        changed = true;
+                    }
+                    Key::Tab => {
+                        // Outline hierarchy: Tab demotes, Shift-Tab promotes.
+                        change_level(tb, st, if m.shift { -1 } else { 1 });
+                        changed = true;
+                    }
+                    Key::B if m.command => {
+                        toggle_char(tb, st, |r| r.bold, |f, v| f.bold = Some(v));
+                        changed = true;
+                    }
+                    Key::I if m.command => {
+                        toggle_char(tb, st, |r| r.italic, |f, v| f.italic = Some(v));
                         changed = true;
                     }
                     Key::Backspace => {
-                        if st.has_selection() {
-                            insert(text, st, "");
+                        let line = tb.line_of(st.caret);
+                        let line_start = st.caret == 0 || chars.get(st.caret - 1) == Some(&'\n');
+                        let pf = tb.para(line);
+                        if !st.has_selection() && line_start && (pf.level > 0 || pf.list != ListKind::None) {
+                            // At the start of a list item: promote, then end the list.
+                            tb.format_lines(line, line, |p| {
+                                if p.level > 0 {
+                                    p.level -= 1;
+                                } else {
+                                    p.list = ListKind::None;
+                                }
+                            });
+                        } else if st.has_selection() {
+                            insert(tb, st, "");
                         } else if st.caret > 0 {
                             let from = if m.alt {
                                 word_left(&chars, st.caret)
@@ -203,13 +289,13 @@ fn apply_events(
                                 st.caret - 1
                             };
                             st.anchor = from;
-                            insert(text, st, "");
+                            insert(tb, st, "");
                         }
                         changed = true;
                     }
                     Key::Delete => {
                         if st.has_selection() {
-                            insert(text, st, "");
+                            insert(tb, st, "");
                         } else if st.caret < n {
                             let to = if m.alt {
                                 word_right(&chars, st.caret)
@@ -217,7 +303,7 @@ fn apply_events(
                                 st.caret + 1
                             };
                             st.anchor = to;
-                            insert(text, st, "");
+                            insert(tb, st, "");
                         }
                         changed = true;
                     }
@@ -306,7 +392,7 @@ pub fn editor_ui(
     let scale = view.scale;
     let size = t.font_size * scale;
     let origin = view.pt(obj.rect.x, obj.rect.y);
-    let n = t.text.chars().count();
+    let n = t.char_len();
     st.caret = st.caret.min(n);
     st.anchor = st.anchor.min(n);
 
@@ -337,20 +423,40 @@ pub fn editor_ui(
     }
     let shift = ui.input(|i| i.modifiers.shift);
     if let Some(p) = resp.interact_pointer_pos() {
-        let pressed = ui.input(|i| i.pointer.primary_pressed());
-        if pressed && resp.hovered() {
+        let (pressed, now) = ui.input(|i| (i.pointer.primary_pressed(), i.time));
+        // The 2nd/3rd press of a double/triple click must not collapse the
+        // selection that the click's release will make.
+        let multi = pressed && st.last_press.is_some_and(|(t, q)| now - t < 0.3 && q.distance(p) < 6.0);
+        if pressed {
+            st.last_press = Some((now, p));
+        }
+        if pressed && resp.hovered() && !multi {
             ui.memory_mut(|m| m.request_focus(eid));
             st.caret = lay.hit(p - origin);
             if !shift {
                 st.anchor = st.caret;
             }
             st.preferred_x = None;
+            st.typing = None;
             st.blink = Instant::now();
         } else if resp.dragged() {
             st.caret = lay.hit(p - origin);
         }
-        if resp.double_clicked() {
-            let chars: Vec<char> = t.text.chars().collect();
+        let chars: Vec<char> = t.text.chars().collect();
+        if resp.triple_clicked() {
+            // Triple-click selects the paragraph (line).
+            let i = lay.hit(p - origin);
+            let start = chars[..i.min(chars.len())]
+                .iter()
+                .rposition(|c| *c == '\n')
+                .map_or(0, |k| k + 1);
+            let end = chars[i.min(chars.len())..]
+                .iter()
+                .position(|c| *c == '\n')
+                .map_or(chars.len(), |k| i + k);
+            st.anchor = start;
+            st.caret = end;
+        } else if resp.double_clicked() {
             let (a, b) = word_at(&chars, lay.hit(p - origin));
             st.anchor = a;
             st.caret = b;
@@ -374,17 +480,13 @@ pub fn editor_ui(
             )
         });
         let events = ui.input(|i| i.events.clone());
-        let mut text = t.text.clone();
-        let (changed, finished) = apply_events(&mut text, st, &events, &lay, ui.ctx());
+        let mut tb = t.clone();
+        let (changed, finished) = apply_events(&mut tb, st, &events, &lay, ui.ctx());
         if changed || !events.is_empty() {
             st.blink = Instant::now();
         }
-        if changed && text != t.text {
-            let mut kind = obj.kind.clone();
-            if let ObjectKind::Text(tt) = &mut kind {
-                tt.text = text;
-            }
-            ed.set_object(id, kind, obj.rect, Some(MergeKey::Object(id, 0)));
+        if changed && &tb != t {
+            ed.set_object(id, ObjectKind::Text(tb), obj.rect, Some(MergeKey::Object(id, 0)));
         }
         if finished {
             outcome = Outcome::Finished;
@@ -398,10 +500,8 @@ pub fn editor_ui(
     let ObjectKind::Text(t) = &obj.kind else {
         return Outcome::Finished;
     };
-    if focused {
-        lay = renderer::layout_text(&painter, sv, t, obj.rect.w, scale, Some(st.caret));
-    }
-    let h_bp = (lay.height / scale).max(t.font_size * typeset::LINE_SPREAD);
+    lay = renderer::layout_text(&painter, sv, t, obj.rect.w, scale, Some(st.caret));
+    let h_bp = (lay.height / scale).max(t.max_size() * typeset::LINE_SPREAD);
     if (obj.rect.h - h_bp).abs() > 0.25
         && let Some(o) = ed.object_mut_for_preview(id)
     {
@@ -425,11 +525,13 @@ pub fn editor_ui(
         }
     }
     if t.text.is_empty() {
+        let hint = t.placeholder.as_deref().unwrap_or("Type text — use $…$ for math");
+        let hs = t.font_size * t.para(0).style.size_factor() * scale * 0.9;
         painter.text(
             origin,
             egui::Align2::LEFT_TOP,
-            "Type text — use $…$ for math",
-            egui::FontId::new(size * 0.9, renderer::text_family(false, true)),
+            hint,
+            egui::FontId::new(hs, renderer::text_family(false, true)),
             Color32::from_gray(160),
         );
     }
@@ -483,43 +585,261 @@ pub fn editor_ui(
     outcome
 }
 
+// ---- formatting API used by the ribbon ---------------------------------------
+
+/// The text box being edited and its caret state, if any.
+fn editing<'a>(ed: &Editor, rich: &'a mut Option<RichEdit>) -> Option<(ObjectId, &'a mut RichEdit)> {
+    let id = ed.editing_text?;
+    let st = rich.as_mut().filter(|st| st.id == id)?;
+    Some((id, st))
+}
+
+fn commit(ed: &mut Editor, id: ObjectId, tb: TextBox, field: u8) {
+    let Some(obj) = ed.object(id).cloned() else { return };
+    if obj.kind != ObjectKind::Text(tb.clone()) {
+        ed.set_object(
+            id,
+            ObjectKind::Text(tb),
+            obj.rect,
+            Some(MergeKey::Object(id, 50 + field)),
+        );
+    }
+}
+
+/// Character appearance shown in the ribbon: at the caret while editing,
+/// else the first selected text box's start.
+pub fn current_char(ed: &Editor, rich: &Option<RichEdit>) -> Option<Resolved> {
+    if let (Some(id), Some(st)) = (ed.editing_text, rich.as_ref())
+        && st.id == id
+        && let Some(ObjectKind::Text(t)) = ed.object(id).map(|o| &o.kind)
+    {
+        let (a, _) = st.selection();
+        return Some(if st.has_selection() {
+            t.resolved_at(a)
+        } else {
+            typing_resolved(t, st)
+        });
+    }
+    ed.selected_text_style().map(|t| t.resolved_at(0))
+}
+
+/// Paragraph format shown in the ribbon.
+pub fn current_para(ed: &Editor, rich: &Option<RichEdit>) -> Option<ParaFmt> {
+    if let (Some(id), Some(st)) = (ed.editing_text, rich.as_ref())
+        && st.id == id
+        && let Some(ObjectKind::Text(t)) = ed.object(id).map(|o| &o.kind)
+    {
+        return Some(t.para(t.line_of(st.caret)));
+    }
+    ed.selected_text_style().map(|t| t.para(0))
+}
+
+/// Toggle bold or italic (`which`: 0 = bold, 1 = italic) for the current
+/// text target. While editing: selection / word / typing format. Otherwise:
+/// all text of the selected boxes.
+pub fn toggle_style(ed: &mut Editor, rich: &mut Option<RichEdit>, which: u8) {
+    let get: fn(&Resolved) -> bool = if which == 0 { |r| r.bold } else { |r| r.italic };
+    let set: fn(&mut CharFmt, bool) = if which == 0 {
+        |f, v| f.bold = Some(v)
+    } else {
+        |f, v| f.italic = Some(v)
+    };
+    if let Some((id, st)) = editing(ed, rich) {
+        let Some(ObjectKind::Text(t)) = ed.object(id).map(|o| o.kind.clone()) else {
+            return;
+        };
+        let mut tb = t;
+        toggle_char(&mut tb, st, get, set);
+        commit(ed, id, tb, which);
+        return;
+    }
+    let on = !ed
+        .selected_text_style()
+        .map(|t| get(&t.resolved_at(0)))
+        .unwrap_or(false);
+    ed.update_selected_text(which, |t| {
+        if t.text.is_empty() {
+            if which == 0 { t.bold = on } else { t.italic = on }
+        } else {
+            let n = t.char_len();
+            t.format_range(0, n, |f| set(f, on));
+        }
+    });
+}
+
+/// Set the text colour of the current target (see [`toggle_style`]).
+pub fn set_color(ed: &mut Editor, rich: &mut Option<RichEdit>, c: crate::document::Color) {
+    if let Some((id, st)) = editing(ed, rich) {
+        let Some(ObjectKind::Text(mut tb)) = ed.object(id).map(|o| o.kind.clone()) else {
+            return;
+        };
+        let chars: Vec<char> = tb.text.chars().collect();
+        let (a, b) = if st.has_selection() {
+            st.selection()
+        } else {
+            word_inside(&chars, st.caret).unwrap_or((st.caret, st.caret))
+        };
+        if a < b {
+            tb.format_range(a, b, |f| f.color = Some(c));
+            commit(ed, id, tb, 2);
+        } else {
+            let mut f = st.typing.unwrap_or_else(|| char_fmt_before(&tb, st.caret));
+            f.color = Some(c);
+            st.typing = Some(f);
+        }
+        return;
+    }
+    ed.update_selected_text(3, |t| {
+        t.color = c;
+        let n = t.char_len();
+        t.format_range(0, n, |f| f.color = None);
+    });
+}
+
+/// Change the paragraph format of the current target: lines touched by the
+/// selection while editing, else every line of the selected boxes.
+pub fn update_paras(ed: &mut Editor, rich: &mut Option<RichEdit>, f: impl Fn(&mut ParaFmt)) {
+    if let Some((id, st)) = editing(ed, rich) {
+        let Some(ObjectKind::Text(mut tb)) = ed.object(id).map(|o| o.kind.clone()) else {
+            return;
+        };
+        let (l0, l1) = selected_lines(&tb, st);
+        tb.format_lines(l0, l1, &f);
+        commit(ed, id, tb, 3);
+        return;
+    }
+    ed.update_selected_text(6, |t| {
+        let n = t.line_count();
+        t.format_lines(0, n - 1, &f);
+    });
+}
+
+/// Toggle a list kind on the current paragraphs.
+pub fn toggle_list(ed: &mut Editor, rich: &mut Option<RichEdit>, kind: ListKind) {
+    let on = current_para(ed, rich).is_none_or(|p| p.list != kind);
+    update_paras(ed, rich, |p| p.list = if on { kind } else { ListKind::None });
+}
+
+/// Increase (+1) or decrease (−1) the outline level of the current paragraphs.
+pub fn shift_level(ed: &mut Editor, rich: &mut Option<RichEdit>, delta: i8) {
+    update_paras(ed, rich, |p| {
+        p.level = (i16::from(p.level) + i16::from(delta)).clamp(0, i16::from(MAX_LEVEL)) as u8;
+    });
+}
+
 /// Insert text at the caret of the box being edited (e.g. ribbon "Math").
 pub fn insert_at_caret(ed: &mut Editor, rich: &mut Option<RichEdit>, s: &str, caret_back: usize) -> bool {
-    let (Some(id), Some(st)) = (ed.editing_text, rich.as_mut()) else {
+    let Some((id, st)) = editing(ed, rich) else {
         return false;
     };
-    if st.id != id {
-        return false;
-    }
-    let Some(obj) = ed.object(id).cloned() else {
+    let Some(ObjectKind::Text(mut tb)) = ed.object(id).map(|o| o.kind.clone()) else {
         return false;
     };
-    let ObjectKind::Text(t) = &obj.kind else { return false };
-    let mut text = t.text.clone();
-    insert(&mut text, st, s);
+    insert(&mut tb, st, s);
     st.caret -= caret_back.min(st.caret);
     st.anchor = st.caret;
-    let mut kind = obj.kind.clone();
-    if let ObjectKind::Text(tt) = &mut kind {
-        tt.text = text;
-    }
-    ed.set_object(id, kind, obj.rect, Some(MergeKey::Object(id, 0)));
+    commit(ed, id, tb, 0);
     true
+}
+
+/// Give keyboard focus back to the box being edited (after a ribbon click).
+pub fn refocus(ctx: &egui::Context, ed: &Editor) {
+    if let Some(id) = ed.editing_text {
+        ctx.memory_mut(|m| m.request_focus(widget_id(id)));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::ParaStyle;
+
+    fn st_at(caret: usize, anchor: usize) -> RichEdit {
+        let mut st = RichEdit::new(ObjectId(1), Caret::End);
+        st.caret = caret;
+        st.anchor = anchor;
+        st
+    }
 
     #[test]
     fn insert_replaces_selection_and_moves_caret() {
-        let mut s = String::from("héllo world");
-        let mut st = RichEdit::new(ObjectId(1), Caret::End);
-        st.anchor = 1;
-        st.caret = 5;
-        insert(&mut s, &mut st, "ey");
-        assert_eq!(s, "hey world");
+        let mut t = TextBox {
+            text: "héllo world".into(),
+            ..Default::default()
+        };
+        let mut st = st_at(5, 1);
+        insert(&mut t, &mut st, "ey");
+        assert_eq!(t.text, "hey world");
         assert_eq!((st.caret, st.anchor), (3, 3));
+    }
+
+    #[test]
+    fn bold_applies_to_selection_word_or_typing() {
+        let mut t = TextBox {
+            text: "one two three".into(),
+            ..Default::default()
+        };
+        // Selection.
+        let mut st = st_at(7, 4);
+        toggle_char(&mut t, &mut st, |r| r.bold, |f, v| f.bold = Some(v));
+        assert!(t.resolved_at(4).bold && !t.resolved_at(3).bold && !t.resolved_at(8).bold);
+        // Caret inside a word: the whole word.
+        let mut st = st_at(10, 10);
+        toggle_char(&mut t, &mut st, |r| r.italic, |f, v| f.italic = Some(v));
+        assert!(t.resolved_at(8).italic && t.resolved_at(12).italic && !t.resolved_at(7).italic);
+        // Caret at the end: applies to what is typed next.
+        let n = t.char_len();
+        let mut st = st_at(n, n);
+        toggle_char(&mut t, &mut st, |r| r.bold, |f, v| f.bold = Some(v));
+        insert(&mut t, &mut st, " four");
+        assert!(t.resolved_at(n + 2).bold);
+        assert!(!t.resolved_at(0).bold);
+    }
+
+    #[test]
+    fn tab_and_backspace_manage_outline_levels() {
+        let ctx = egui::Context::default();
+        let lay = text_layout::TextLayout {
+            lines: vec![],
+            height: 0.0,
+            len: 0,
+            pending: false,
+            errors: vec![],
+        };
+        let mut t = TextBox {
+            text: "a\nb".into(),
+            ..Default::default()
+        };
+        t.format_lines(0, 1, |p| p.list = ListKind::Bullet);
+        let key = |k: Key, shift: bool| Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: if shift { Modifiers::SHIFT } else { Modifiers::NONE },
+        };
+        let mut st = st_at(2, 2);
+        apply_events(
+            &mut t,
+            &mut st,
+            &[key(Key::Tab, false), key(Key::Tab, false)],
+            &lay,
+            &ctx,
+        );
+        assert_eq!(t.para(1).level, 2);
+        apply_events(&mut t, &mut st, &[key(Key::Tab, true)], &lay, &ctx);
+        assert_eq!(t.para(1).level, 1);
+        // Backspace at the start of the item promotes, then removes the bullet,
+        // and only then joins the lines.
+        apply_events(&mut t, &mut st, &[key(Key::Backspace, false)], &lay, &ctx);
+        assert_eq!((t.para(1).level, t.para(1).list), (0, ListKind::Bullet));
+        apply_events(&mut t, &mut st, &[key(Key::Backspace, false)], &lay, &ctx);
+        assert_eq!(t.para(1).list, ListKind::None);
+        assert_eq!(t.text, "a\nb");
+        apply_events(&mut t, &mut st, &[key(Key::Backspace, false)], &lay, &ctx);
+        assert_eq!(t.text, "ab");
+        assert_eq!(t.para(0).list, ListKind::Bullet);
+        let _ = ParaStyle::Title;
     }
 
     #[test]
@@ -530,5 +850,7 @@ mod tests {
         assert_eq!(word_left(&c, 14), 9);
         assert_eq!(word_left(&c, 9), 4);
         assert_eq!(word_at(&c, 5), (4, 7));
+        assert_eq!(word_inside(&c, 5), Some((4, 7)));
+        assert_eq!(word_inside(&c, 4), None);
     }
 }
