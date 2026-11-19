@@ -126,7 +126,7 @@ pub struct MathService {
 }
 
 pub const NO_ENGINE: &str =
-    "No LaTeX engine found. Install Tectonic (`brew install tectonic`) or MacTeX, then restart BeamerX.";
+    "No LaTeX engine found. Install Tectonic or a TeX Live/MacTeX distribution, then restart BeamerX.";
 
 impl MathService {
     pub fn new(toolchain: Option<Toolchain>, cache_dir: PathBuf, waker: Arc<dyn Fn() + Send + Sync>) -> Self {

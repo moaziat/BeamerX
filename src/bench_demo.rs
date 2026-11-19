@@ -921,7 +921,7 @@ impl Demo {
             Act::Click | Act::DoubleClick => {
                 let presses = if matches!(act, Act::Click) { 1 } else { 2 };
                 if self.sub < presses * 2 {
-                    let down = self.sub % 2 == 0;
+                    let down = self.sub.is_multiple_of(2);
                     let ev = self.button(down);
                     app.inject_events().push(ev);
                     if down {

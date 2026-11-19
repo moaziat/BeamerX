@@ -1937,10 +1937,10 @@ impl eframe::App for BeamerApp {
 
         if self.presenting.is_some() {
             self.present_ui(ui);
-            if let Some(mut b) = self.bench.take() {
-                if b.tick(self, &ctx) {
-                    self.bench = Some(b);
-                }
+            if let Some(mut b) = self.bench.take()
+                && b.tick(self, &ctx)
+            {
+                self.bench = Some(b);
             }
             return;
         }
@@ -2069,10 +2069,10 @@ impl eframe::App for BeamerApp {
         if let Some(m) = &self.menu {
             m.set_undo_redo(self.ed.history.can_undo(), self.ed.history.can_redo());
         }
-        if let Some(mut b) = self.bench.take() {
-            if b.tick(self, &ctx) {
-                self.bench = Some(b);
-            }
+        if let Some(mut b) = self.bench.take()
+            && b.tick(self, &ctx)
+        {
+            self.bench = Some(b);
         }
     }
 

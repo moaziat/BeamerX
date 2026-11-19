@@ -548,7 +548,7 @@ pub fn editor_ui(
     if focused {
         let elapsed = st.blink.elapsed();
         let phase = elapsed.as_millis() / BLINK.as_millis();
-        if phase % 2 == 0 {
+        if phase.is_multiple_of(2) {
             let c = if light_bg {
                 Color32::from_gray(15)
             } else {

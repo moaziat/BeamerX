@@ -164,6 +164,8 @@ placed absolutely with TikZ, so positions and sizes match the editor exactly.
   `flush` alignments, which fill lines greedily and never hyphenate, like the
   editor; small width differences from kerning can still move a word.
 * Math is serif (`\usefonttheme[onlymath]{serif}`), as in the preview.
+* Equation PDFs are rasterized in-process with macOS CoreGraphics or the
+  CPU-only pure-Rust Hayro renderer on Linux; no separate PDF utility is needed.
 * Colours with transparency are exported with TikZ opacity.
 * The Design ribbon includes stock Beamer themes (Default, Madrid, Boadilla,
   CambridgeUS, Berlin and Copenhagen); the editor previews their structural
@@ -184,8 +186,6 @@ placed absolutely with TikZ, so positions and sizes match the editor exactly.
   executed.
 * User preamble lines that only make sense in Beamer (`\usetheme`,
   `\setbeamer…`, …) are skipped when typesetting previews.
-* Equation preview rasterization uses macOS CoreGraphics; other platforms show
-  the source instead of the typeset formula.
 * No rotation, cropping, grouping, animations, speaker notes, Beamer import,
   PowerPoint, collaboration or cloud sync (out of scope for 0.1).
 * Opening a `.beamerx` by double-clicking it in Finder is not wired up yet;
@@ -207,8 +207,8 @@ src/
   latex.rs        external engine discovery; cancellable, time-limited runs
   export.rs       Beamer generation; atomic folder and PDF export
   persistence.rs  .beamerx packages; atomic save; validated load; migrations
-  platform/       macOS menu bar (muda) and CoreGraphics PDF rasterization
-                  (the only `unsafe` code, documented in the module)
+  platform/       macOS menu bar (muda); CoreGraphics (macOS) and Hayro
+                  (Linux) equation-PDF rasterization
   jobs.rs         bounded worker pools (decode, LaTeX, I/O)
   perf.rs         frame statistics; bench.rs / bench_smoke.rs benchmarks;
                   bench_demo.rs scripted, self-recorded product demo
@@ -221,7 +221,8 @@ saving, loading and export run on worker threads.
 Rust, using `egui`/`eframe` with the OpenGL (`glow`) renderer, `winit`, `muda`
 and `rfd` for native windows, menus and dialogs. Image decoding (`image`,
 `zune-jpeg`, `png`) and ZIP/zlib (`zip`, `zlib-rs`) are pure Rust. The app
-links macOS system frameworks (AppKit, OpenGL, CoreGraphics). LaTeX is **not**
+links macOS system frameworks (AppKit, OpenGL, CoreGraphics); Linux equation
+previews use the CPU-only pure-Rust Hayro renderer. LaTeX is **not**
 bundled: it is a separately installed program (Tectonic is itself a Rust
 program embedding the XeTeX engine, written in C/C++) invoked as a subprocess
 with shell escape disabled.

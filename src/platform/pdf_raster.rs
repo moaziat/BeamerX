@@ -1,14 +1,15 @@
 //! Rasterize PDF pages (equation previews produced by TeX) into 8-bit
-//! coverage masks using macOS CoreGraphics.
+//! coverage masks. macOS uses CoreGraphics; Linux uses the CPU-only Hayro
+//! renderer and therefore needs no external PDF utility.
 //!
 //! # Safety
 //!
-//! This is the only module that calls into CoreGraphics. Every object
+//! On macOS, this is the only module that calls into CoreGraphics. Every object
 //! created here is released before returning (RAII guards below); pixel
 //! buffers are owned by Rust and outlive the bitmap context that writes into
 //! them. Inputs are validated (null checks, size limits) before use.
 //! CoreGraphics objects are created and destroyed on the calling thread and
-//! are never shared between threads.
+//! are never shared between threads. Hayro's safe Rust API is used on Linux.
 
 use anyhow::{Result, bail};
 
@@ -249,19 +250,112 @@ pub fn rasterize_alpha(pdf: &[u8], index: usize, scale: f32) -> Result<AlphaMask
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn hayro_pdf(pdf: &[u8]) -> Result<hayro::hayro_syntax::Pdf> {
+    if pdf.is_empty() {
+        bail!("empty PDF");
+    }
+    hayro::hayro_syntax::Pdf::new(pdf.to_vec()).map_err(|error| anyhow::anyhow!("invalid PDF: {error:?}"))
+}
+
+#[cfg(target_os = "linux")]
+fn hayro_page_sizes(pdf: &[u8]) -> Result<Vec<(f32, f32)>> {
+    let pdf = hayro_pdf(pdf)?;
+    let sizes = pdf
+        .pages()
+        .iter()
+        .map(|page| page.render_dimensions())
+        .collect::<Vec<_>>();
+    if sizes.is_empty() {
+        bail!("PDF has no pages");
+    }
+    Ok(sizes)
+}
+
+/// Rasterize through Hayro on Linux. Rendering stays in-process so the
+/// installed application does not depend on `pdftocairo`, PDFium, or another
+/// system PDF library.
+#[cfg(target_os = "linux")]
+fn hayro_rasterize_alpha(pdf: &[u8], index: usize, scale: f32) -> Result<AlphaMask> {
+    use hayro::hayro_interpret::InterpreterSettings;
+    use hayro::vello_cpu::color::palette::css::WHITE;
+    use hayro::{PixmapSettings, RenderCache, RenderSettings, render};
+
+    if !(scale.is_finite() && scale > 0.0) {
+        bail!("invalid raster scale");
+    }
+    let pdf = hayro_pdf(pdf)?;
+    let pages = pdf.pages();
+    let page = pages
+        .get(index)
+        .ok_or_else(|| anyhow::anyhow!("PDF page {index} out of range"))?;
+    let (page_width, page_height) = page.render_dimensions();
+    if !(page_width.is_finite() && page_height.is_finite() && page_width > 0.0 && page_height > 0.0) {
+        bail!("invalid PDF page size ({page_width}×{page_height} bp)");
+    }
+    let width = (page_width * scale).ceil().max(1.0);
+    let height = (page_height * scale).ceil().max(1.0);
+    if width > MAX_RASTER_SIDE as f32 || height > MAX_RASTER_SIDE as f32 {
+        bail!("equation raster too large ({width}×{height} px)");
+    }
+
+    let pixmap = render(
+        page,
+        &RenderCache::new(),
+        &InterpreterSettings::default(),
+        &RenderSettings::default(),
+        &PixmapSettings {
+            x_scale: scale,
+            y_scale: scale,
+            bg_color: WHITE,
+        },
+    );
+    let width = u32::from(pixmap.width());
+    let height = u32::from(pixmap.height());
+    if width == 0 || height == 0 {
+        bail!("PDF renderer produced an empty equation preview");
+    }
+
+    // Hayro returns opaque premultiplied RGBA on the requested white
+    // background. Equations are dark-on-white; turn perceived brightness
+    // into coverage while intentionally discarding colour, like the macOS
+    // path. Integer Rec. 709 weights preserve anti-aliased edge smoothness.
+    let alpha = pixmap
+        .data_as_u8_slice()
+        .chunks_exact(4)
+        .map(|rgba| {
+            let luminance = (54 * u32::from(rgba[0]) + 183 * u32::from(rgba[1]) + 19 * u32::from(rgba[2]) + 128) >> 8;
+            (255 - luminance) as u8
+        })
+        .collect();
+    Ok(AlphaMask { width, height, alpha })
+}
+
+#[cfg(target_os = "linux")]
+pub fn page_sizes(pdf: &[u8]) -> Result<Vec<(f32, f32)>> {
+    hayro_page_sizes(pdf)
+}
+
+#[cfg(target_os = "linux")]
+pub fn rasterize_alpha(pdf: &[u8], index: usize, scale: f32) -> Result<AlphaMask> {
+    hayro_rasterize_alpha(pdf, index, scale)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn page_sizes(_pdf: &[u8]) -> Result<Vec<(f32, f32)>> {
-    bail!("equation preview rasterization is only implemented on macOS")
+    bail!("equation preview rasterization is not implemented on this platform")
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn rasterize_alpha(_pdf: &[u8], _index: usize, _scale: f32) -> Result<AlphaMask> {
-    bail!("equation preview rasterization is only implemented on macOS")
+    bail!("equation preview rasterization is not implemented on this platform")
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use std::sync::atomic::AtomicBool;
 
     /// Minimal hand-written one-page PDF (100×50 bp) with a filled black
     /// rectangle covering the top-left quadrant.
@@ -316,5 +410,58 @@ mod tests {
         assert!(page_sizes(b"not a pdf").is_err());
         assert!(rasterize_alpha(&tiny_pdf(), 3, 1.0).is_err());
         assert!(rasterize_alpha(&tiny_pdf(), 0, 1000.0).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hayro_backend_size_orientation_and_errors() {
+        let pdf = tiny_pdf();
+        assert_eq!(hayro_page_sizes(&pdf).unwrap(), vec![(100.0, 50.0)]);
+        let m = hayro_rasterize_alpha(&pdf, 0, 2.0).unwrap();
+        assert_eq!((m.width, m.height), (200, 100));
+        let at = |x: u32, y: u32| m.alpha[(y * m.width + x) as usize];
+        assert_eq!(at(10, 10), 255);
+        assert_eq!(at(150, 10), 0);
+        assert_eq!(at(10, 90), 0);
+        assert!(hayro_page_sizes(b"not a pdf").is_err());
+        assert!(hayro_rasterize_alpha(&pdf, 3, 1.0).is_err());
+        assert!(hayro_rasterize_alpha(&pdf, 0, 1000.0).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hayro_backend_renders_real_latex_output_when_available() {
+        let Some(toolchain) = crate::latex::Toolchain::detect() else {
+            return;
+        };
+        let session = crate::assets::AssetStore::new_session().unwrap();
+        let tex = r#"\documentclass{article}
+\usepackage[active,tightpage]{preview}
+\begin{document}
+\begin{preview}
+$\displaystyle \sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}$
+\end{preview}
+\end{document}
+"#;
+        std::fs::write(session.dir().join("equation.tex"), tex).unwrap();
+        let path = toolchain
+            .compile(
+                session.dir(),
+                "equation.tex",
+                &crate::latex::CompileOptions::preview(),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        let pdf = std::fs::read(path).unwrap();
+        let sizes = hayro_page_sizes(&pdf).unwrap();
+        assert_eq!(sizes.len(), 1);
+        assert!(
+            sizes[0].0 > 20.0 && sizes[0].1 > 10.0,
+            "unexpected equation size: {:?}",
+            sizes[0]
+        );
+        let mask = hayro_rasterize_alpha(&pdf, 0, 2.0).unwrap();
+        let inked = mask.alpha.iter().filter(|&&alpha| alpha > 32).count();
+        assert!(inked > 100, "equation rendered blank ({inked} inked pixels)");
     }
 }
