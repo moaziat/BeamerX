@@ -102,6 +102,9 @@ optional pane with exact position, size, colours and picture details.
 * **Shapes** — rectangle, rounded rectangle, oval, triangle, diamond, cube,
   cylinder, bevel, block arrow, line and arrow from the *Home › Drawing* or *Insert › Shapes* gallery; fill and
   outline stay available in *Home › Drawing*.
+* **Freehand drawing** — choose *Pen* in *Home › Drawing* or press `P`, then
+  drag on the slide. Strokes remain editable vector objects: move, resize,
+  recolour, change width/dashes, order, copy, delete and undo them normally.
 * **Edit** — shift-click / marquee for multi-selection; align and order in
   *Arrange*; `⌘C`/`⌘X`/`⌘V`/`⌘D`; `⌫` deletes; undo/redo `⌘Z`/`⇧⌘Z`.
 * **Slides** — *Home › New Slide*, or thumbnails: click to select, drag to
@@ -136,7 +139,7 @@ A ZIP container: `mimetype`, a versioned `project.json` (document + asset
 manifest) and the **original image bytes** under `assets/<sha256>.<ext>`
 (stored, not recompressed, de-duplicated by content hash). No base64 in JSON.
 Saves are atomic (temp file → fsync → rename); a failed save never damages the
-previous file. Format 7 adds the block-arrow shape; format 6 adds line ends; format 5 adds a persistent stock Beamer theme; format 4 adds named slide sections; format 3 stores character
+previous file. Format 8 adds editable freehand vector strokes; format 7 adds the block-arrow shape; format 6 adds line ends; format 5 adds a persistent stock Beamer theme; format 4 adds named slide sections; format 3 stores character
 formats as spans and paragraph formats (style, list, level) per line. Older files are migrated on open:
 format-1 equation objects become text boxes containing `$\displaystyle …$`,
 and format-2 box-wide bullets become per-paragraph bullets. Loading validates structure, bounds sizes, never uses archive

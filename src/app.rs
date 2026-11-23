@@ -1072,6 +1072,12 @@ impl BeamerApp {
         self.font_group(ui);
         self.paragraph_group(ui);
         group(ui, "Drawing", |ui| {
+            if icons::big_toggle(ui, Icon::Pen, "Pen", self.ed.tool == Tool::Pen)
+                .on_hover_text("Draw freehand vector strokes on the slide (P)")
+                .clicked()
+            {
+                self.ed.set_tool(Tool::Pen);
+            }
             self.shape_gallery(ui, false);
             if icons::big(ui, Icon::Picture, "Picture…").clicked() {
                 *insert_image = true;
@@ -1348,20 +1354,22 @@ impl BeamerApp {
         ui.add_enabled_ui(shape.is_some(), |ui| {
             let mut s = shape.unwrap_or_else(|| crate::document::Shape::new(ShapeKind::Rectangle));
             ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Fill").small());
-                    let mut fill = s.fill.unwrap_or(crate::document::Color::LIGHT_FILL);
-                    if inspector::color_edit(ui, &mut fill) {
-                        self.ed.update_selected_shapes(10, |x| {
-                            if !x.kind.is_linear() {
-                                x.fill = Some(fill)
-                            }
-                        });
-                    }
-                    if ui.small_button("None").on_hover_text("No fill").clicked() {
-                        self.ed.update_selected_shapes(10, |x| x.fill = None);
-                    }
-                });
+                if s.kind.supports_fill() {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Fill").small());
+                        let mut fill = s.fill.unwrap_or(crate::document::Color::LIGHT_FILL);
+                        if inspector::color_edit(ui, &mut fill) {
+                            self.ed.update_selected_shapes(10, |x| {
+                                if x.kind.supports_fill() {
+                                    x.fill = Some(fill)
+                                }
+                            });
+                        }
+                        if ui.small_button("None").on_hover_text("No fill").clicked() {
+                            self.ed.update_selected_shapes(10, |x| x.fill = None);
+                        }
+                    });
+                }
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Outline").small());
                     if inspector::color_edit(ui, &mut s.stroke) {
@@ -1428,6 +1436,12 @@ impl BeamerApp {
             }
         });
         group(ui, "Shapes", |ui| {
+            if icons::big_toggle(ui, Icon::Pen, "Draw", self.ed.tool == Tool::Pen)
+                .on_hover_text("Draw freehand vector strokes on the slide (P)")
+                .clicked()
+            {
+                self.ed.set_tool(Tool::Pen);
+            }
             self.shape_gallery(ui, true);
         });
         ui.label(

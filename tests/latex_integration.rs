@@ -134,6 +134,13 @@ fn sample_deck(store: &AssetStore) -> SaveSnapshot {
         Rect::new(400.0, 200.0, 40.0, 40.0),
         ObjectKind::Shape(dashed),
     );
+    let mut ink = Shape::new(ShapeKind::Freehand);
+    ink.stroke = Color::rgb(35, 35, 35);
+    ink.stroke_width = 2.0;
+    let ink_rect = ink
+        .set_freehand_points(&[(155.0, 245.0), (175.0, 232.0), (195.0, 246.0), (220.0, 231.0)])
+        .unwrap();
+    add(&mut doc, s1, ink_rect, ObjectKind::Shape(ink));
     let mut arrow = Shape::new(ShapeKind::Arrow);
     let r = arrow.set_endpoints((150.0, 200.0), (280.0, 160.0));
     add(&mut doc, s1, r, ObjectKind::Shape(arrow));

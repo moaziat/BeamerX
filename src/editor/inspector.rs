@@ -222,7 +222,7 @@ fn single(ui: &mut Ui, ed: &mut Editor, assets: &AssetStore) {
                     }
                 });
             }
-            if !s.kind.is_linear() {
+            if s.kind.supports_fill() {
                 section(ui, "FILL");
                 ui.horizontal(|ui| {
                     let mut has_fill = s.fill.is_some();
@@ -233,7 +233,8 @@ fn single(ui: &mut Ui, ed: &mut Editor, assets: &AssetStore) {
                         color_edit(ui, f);
                     }
                 });
-            } else {
+            }
+            if s.kind.is_linear() {
                 ui.horizontal(|ui| {
                     if icons::small_toggle(ui, Icon::Line, "Line", s.kind == ShapeKind::Line).clicked() {
                         s.kind = ShapeKind::Line;

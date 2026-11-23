@@ -26,7 +26,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 pub const FORMAT_NAME: &str = "beamerx";
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 pub const MIMETYPE: &str = "application/x-beamerx";
 pub const EXTENSION: &str = "beamerx";
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -170,6 +170,11 @@ fn migrate(mut v: Value) -> Result<Value> {
     if ver == 6 {
         // Format 7 added the block-arrow shape; nothing to convert.
         ver = 7;
+    }
+    if ver == 7 {
+        // Format 8 added normalized vector points for freehand drawings.
+        // Existing shapes deserialize with an empty points list.
+        ver = 8;
     }
     v["format_version"] = ver.into();
     Ok(v)
@@ -561,6 +566,27 @@ mod tests {
                 (LineEnd::None, LineEnd::None, DashStyle::Solid)
             ]
         );
+    }
+
+    #[test]
+    fn v7_shapes_gain_empty_freehand_points() {
+        let mut v = serde_json::to_value(Manifest {
+            format: FORMAT_NAME.into(),
+            format_version: 7,
+            app_version: "0.1.0".into(),
+            document: Document::new(),
+            assets: vec![],
+        })
+        .unwrap();
+        v["document"]["slides"][0]["objects"] = serde_json::json!([{
+            "id": 900, "rect": {"x": 1.0, "y": 2.0, "w": 30.0, "h": 20.0}, "type": "shape",
+            "kind": "rectangle", "stroke": "#000000", "stroke_width": 1.0, "fill": "#ffffff"
+        }]);
+        let (doc, _) = parse_manifest(&serde_json::to_vec(&v).unwrap()).unwrap();
+        let ObjectKind::Shape(shape) = &doc.slides[0].objects[0].kind else {
+            unreachable!()
+        };
+        assert!(shape.points.is_empty());
     }
 
     #[test]

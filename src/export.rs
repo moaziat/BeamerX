@@ -512,6 +512,20 @@ fn shape_cmd(o: &Object, s: &Shape) -> String {
                 _ => unreachable!("linear shapes are handled below"),
             }
         }
+        ShapeKind::Freehand => {
+            if !has_stroke || s.points.len() < 2 {
+                return String::new();
+            }
+            opts.push("line cap=round".into());
+            opts.push("line join=round".into());
+            let path = s
+                .freehand_points(r)
+                .into_iter()
+                .map(|(x, y)| format!("({},{})", bp(x), bp(y)))
+                .collect::<Vec<_>>()
+                .join(" -- ");
+            format!("\\draw[{}] {path};\n", opts.join(","))
+        }
         ShapeKind::Line | ShapeKind::Arrow => {
             if !has_stroke {
                 return String::new();
@@ -969,6 +983,22 @@ mod tests {
             &arrow,
         );
         assert!(tex.contains("{}-{Triangle[") && !tex.contains("dash pattern"), "{tex}");
+    }
+
+    #[test]
+    fn freehand_drawings_export_as_round_vector_paths() {
+        let mut shape = Shape::new(ShapeKind::Freehand);
+        let rect = shape
+            .set_freehand_points(&[(10.0, 20.0), (25.0, 30.0), (40.0, 20.0)])
+            .unwrap();
+        let object = Object {
+            id: ObjectId(1),
+            rect,
+            kind: ObjectKind::Shape(shape.clone()),
+        };
+        let tex = shape_cmd(&object, &shape);
+        assert!(tex.contains("line cap=round,line join=round"), "{tex}");
+        assert!(tex.contains("(10,20) -- (25,30) -- (40,20)"), "{tex}");
     }
 
     #[test]

@@ -576,7 +576,7 @@ fn shape_outlines(kind: ShapeKind, d: egui::Rect, r: &Rect, scale: f32) -> Vec<(
             let pts = crate::document::block_arrow_points(d.left(), d.top(), d.width(), d.height());
             vec![(pts.iter().map(|(x, y)| pos2(*x, *y)).collect(), true)]
         }
-        ShapeKind::Line | ShapeKind::Arrow => Vec::new(),
+        ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Freehand => Vec::new(),
     }
 }
 
@@ -759,6 +759,23 @@ pub fn paint_shape(p: &Painter, view: &View, r: &Rect, s: &Shape) {
                 ));
                 p.add(egui::Shape::convex_polygon(vec![q(2), q(3), q(4)], fill, Stroke::NONE));
             }
+        }
+        ShapeKind::Freehand => {
+            if s.stroke_width <= 0.0 || s.points.len() < 2 {
+                return;
+            }
+            let points: Vec<_> = s
+                .points
+                .iter()
+                .map(|&(x, y)| view.pt(r.x + x * r.w, r.y + y * r.h))
+                .collect();
+            stroke_path(p, &points, false, stroke, s.dash, s.stroke_width, view.scale);
+            if s.dash == DashStyle::Solid {
+                let color = c32(s.stroke);
+                p.circle_filled(points[0], sw * 0.5, color);
+                p.circle_filled(points[points.len() - 1], sw * 0.5, color);
+            }
+            return;
         }
         ShapeKind::Line | ShapeKind::Arrow => {
             if s.stroke_width <= 0.0 {

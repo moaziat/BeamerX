@@ -34,6 +34,10 @@ pub const MIN_FONT_SIZE: f32 = 4.0;
 pub const MAX_FONT_SIZE: f32 = 144.0;
 /// Coordinates are clamped to this range to keep files sane.
 pub const COORD_LIMIT: f32 = 10_000.0;
+/// Hard cap for one freehand stroke. Pointer sampling and simplification keep
+/// normal strokes far below this; the cap protects loading and rendering from
+/// hostile or accidentally enormous project files.
+pub const MAX_FREEHAND_POINTS: usize = 8_192;
 
 // ---------------------------------------------------------------------------
 // Identifiers
@@ -634,6 +638,8 @@ pub enum ShapeKind {
     BlockArrow,
     Line,
     Arrow,
+    /// An open, normalized vector path produced by the pen tool.
+    Freehand,
 }
 
 /// Outline of a right-pointing block arrow inside `(x, y, w, h)`:
@@ -657,6 +663,10 @@ pub fn block_arrow_points(x: f32, y: f32, w: f32, h: f32) -> [(f32, f32); 7] {
 impl ShapeKind {
     pub fn is_linear(self) -> bool {
         matches!(self, ShapeKind::Line | ShapeKind::Arrow)
+    }
+
+    pub fn supports_fill(self) -> bool {
+        !matches!(self, ShapeKind::Line | ShapeKind::Arrow | ShapeKind::Freehand)
     }
 
     /// Comfortable click-to-insert dimensions in slide-space points.
@@ -814,6 +824,10 @@ pub struct Shape {
     pub start_tip: LineEnd,
     #[serde(default)]
     pub end_tip: LineEnd,
+    /// Points normalized into the object's rectangle. Used only by
+    /// [`ShapeKind::Freehand`], and omitted for every ordinary shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<(f32, f32)>,
 }
 
 impl Shape {
@@ -844,6 +858,7 @@ impl Shape {
             } else {
                 LineEnd::None
             },
+            points: Vec::new(),
         }
     }
 
@@ -870,6 +885,46 @@ impl Shape {
             self.reversed = start.0 > end.0;
         }
         Rect::from_points(start, end)
+    }
+
+    /// Store an absolute slide-space freehand path as normalized points and
+    /// return its resizeable bounding rectangle.
+    pub fn set_freehand_points(&mut self, points: &[(f32, f32)]) -> Option<Rect> {
+        if self.kind != ShapeKind::Freehand || points.len() < 2 {
+            return None;
+        }
+        let clean: Vec<_> = points
+            .iter()
+            .copied()
+            .filter(|(x, y)| x.is_finite() && y.is_finite())
+            .take(MAX_FREEHAND_POINTS)
+            .collect();
+        if clean.len() < 2 {
+            return None;
+        }
+        let (mut min_x, mut min_y) = clean[0];
+        let (mut max_x, mut max_y) = clean[0];
+        for &(x, y) in &clean[1..] {
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+        let raw_w = max_x - min_x;
+        let raw_h = max_y - min_y;
+        let w = raw_w.max(MIN_EXTENT);
+        let h = raw_h.max(MIN_EXTENT);
+        let x = min_x - (w - raw_w) * 0.5;
+        let y = min_y - (h - raw_h) * 0.5;
+        self.points = clean.into_iter().map(|(px, py)| ((px - x) / w, (py - y) / h)).collect();
+        Some(Rect::new(x, y, w, h))
+    }
+
+    pub fn freehand_points(&self, rect: &Rect) -> Vec<(f32, f32)> {
+        self.points
+            .iter()
+            .map(|&(x, y)| (rect.x + x * rect.w, rect.y + y * rect.h))
+            .collect()
     }
 }
 
@@ -898,6 +953,7 @@ impl ObjectKind {
                 ShapeKind::BlockArrow => "Block Arrow",
                 ShapeKind::Line => "Line",
                 ShapeKind::Arrow => "Arrow",
+                ShapeKind::Freehand => "Drawing",
             },
         }
     }
@@ -913,7 +969,7 @@ impl ObjectKind {
             + match self {
                 ObjectKind::Text(t) => t.text.len() + t.spans.len() * 16 + t.paras.len() * 4,
                 ObjectKind::Image(i) => i.asset.0.len(),
-                ObjectKind::Shape(_) => 0,
+                ObjectKind::Shape(s) => s.points.len() * std::mem::size_of::<(f32, f32)>(),
             }
     }
 }
@@ -1172,6 +1228,16 @@ impl Document {
                         } else {
                             1.0
                         };
+                        if sh.kind == ShapeKind::Freehand {
+                            sh.points.retain(|(x, y)| x.is_finite() && y.is_finite());
+                            sh.points.truncate(MAX_FREEHAND_POINTS);
+                            for (x, y) in &mut sh.points {
+                                *x = x.clamp(0.0, 1.0);
+                                *y = y.clamp(0.0, 1.0);
+                            }
+                        } else {
+                            sh.points.clear();
+                        }
                     }
                 }
             }
@@ -1250,6 +1316,22 @@ mod tests {
             let r = s.set_endpoints(a, b);
             assert_eq!(s.endpoints(&r), (a, b), "{a:?} -> {b:?}");
         }
+    }
+
+    #[test]
+    fn freehand_points_normalize_and_follow_resizes() {
+        let source = [(10.0, 20.0), (30.0, 25.0), (50.0, 10.0)];
+        let mut shape = Shape::new(ShapeKind::Freehand);
+        let rect = shape.set_freehand_points(&source).unwrap();
+        let restored = shape.freehand_points(&rect);
+        for (actual, expected) in restored.iter().zip(source) {
+            assert!((actual.0 - expected.0).abs() < 1e-4);
+            assert!((actual.1 - expected.1).abs() < 1e-4);
+        }
+        let resized = Rect::new(rect.x, rect.y, rect.w * 2.0, rect.h * 3.0);
+        let scaled = shape.freehand_points(&resized);
+        assert!((scaled[2].0 - (rect.x + (source[2].0 - rect.x) * 2.0)).abs() < 1e-3);
+        assert!((scaled[2].1 - (rect.y + (source[2].1 - rect.y) * 3.0)).abs() < 1e-3);
     }
 
     #[test]

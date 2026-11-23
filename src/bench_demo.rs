@@ -423,6 +423,7 @@ fn gallery_label(k: ShapeKind) -> &'static str {
         ShapeKind::BlockArrow => "Block arrow",
         ShapeKind::Line => "Line",
         ShapeKind::Arrow => "Arrow",
+        ShapeKind::Freehand => "Drawing",
     }
 }
 

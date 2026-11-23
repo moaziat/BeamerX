@@ -9,7 +9,9 @@
 use super::text_edit::{self, Caret, Outcome, RichEdit};
 use super::{Editor, Tool, Zoom, new_object_kind};
 use crate::commands::Command;
-use crate::document::{MIN_EXTENT, ObjectId, ObjectKind, Rect, SLIDE_H, SLIDE_W, Shape, typeset};
+use crate::document::{
+    Color, MAX_FREEHAND_POINTS, MIN_EXTENT, ObjectId, ObjectKind, Rect, SLIDE_H, SLIDE_W, Shape, ShapeKind, typeset,
+};
 use crate::renderer::{self, PaintOpts, Services, View};
 use egui::{Color32, CursorIcon, Key, Pos2, Sense, Stroke, StrokeKind, Ui, Vec2, vec2};
 
@@ -51,6 +53,9 @@ enum Gesture {
         tool: Tool,
         start: (f32, f32),
         current: (f32, f32),
+    },
+    Draw {
+        points: Vec<(f32, f32)>,
     },
     Pan {
         last: Pos2,
@@ -163,6 +168,55 @@ fn dist_to_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
     ((p.0 - cx).powi(2) + (p.1 - cy).powi(2)).sqrt()
 }
 
+/// Ramer-Douglas-Peucker simplification without recursion. It preserves the
+/// visible shape while bounding save size and paint/export work.
+fn simplify_freehand(points: &[(f32, f32)], tolerance: f32) -> Vec<(f32, f32)> {
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+    let mut keep = vec![false; points.len()];
+    keep[0] = true;
+    keep[points.len() - 1] = true;
+    let mut spans = vec![(0usize, points.len() - 1)];
+    while let Some((start, end)) = spans.pop() {
+        let mut farthest = None;
+        let mut max_distance = tolerance;
+        for i in start + 1..end {
+            let distance = dist_to_segment(points[i], points[start], points[end]);
+            if distance > max_distance {
+                max_distance = distance;
+                farthest = Some(i);
+            }
+        }
+        if let Some(i) = farthest {
+            keep[i] = true;
+            spans.push((start, i));
+            spans.push((i, end));
+        }
+    }
+    points
+        .iter()
+        .zip(keep)
+        .filter_map(|(&point, keep)| keep.then_some(point))
+        .collect()
+}
+
+fn insert_freehand(ed: &mut Editor, points: &[(f32, f32)], view_scale: f32) -> Option<ObjectId> {
+    let points = simplify_freehand(points, (0.75 / view_scale).clamp(0.08, 0.75));
+    if points.len() < 2 {
+        return None;
+    }
+    let mut shape = Shape::new(ShapeKind::Freehand);
+    shape.stroke = Color::BLACK;
+    shape.stroke_width = 2.0;
+    let rect = shape.set_freehand_points(&points)?;
+    let id = ed.insert_object(ObjectKind::Shape(shape), rect);
+    // The pen remains active for consecutive strokes, without resize handles
+    // obscuring the line that was just drawn.
+    ed.selection.clear();
+    Some(id)
+}
+
 /// Topmost object under slide-space point `p` (tolerance in bp).
 pub fn hit_test(ed: &Editor, p: (f32, f32), tol: f32) -> Option<ObjectId> {
     ed.slide().objects.iter().rev().find_map(|o| {
@@ -171,6 +225,10 @@ pub fn hit_test(ed: &Editor, p: (f32, f32), tol: f32) -> Option<ObjectId> {
                 let (a, b) = s.endpoints(&o.rect);
                 dist_to_segment(p, a, b) <= tol + s.stroke_width * 0.5
             }
+            ObjectKind::Shape(s) if s.kind == ShapeKind::Freehand => s.points.windows(2).any(|pair| {
+                let at = |(x, y): (f32, f32)| (o.rect.x + x * o.rect.w, o.rect.y + y * o.rect.h);
+                dist_to_segment(p, at(pair[0]), at(pair[1])) <= tol + s.stroke_width * 0.5
+            }),
             _ => o.rect.expanded(tol).contains(p),
         };
         hit.then_some(o.id)
@@ -516,6 +574,7 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
                 Key::O,
                 Key::L,
                 Key::A,
+                Key::P,
                 Key::I,
             ]
             .into_iter()
@@ -550,6 +609,7 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
                 Key::O if plain => ed.set_tool(Tool::Shape(crate::document::ShapeKind::Ellipse)),
                 Key::L if plain => ed.set_tool(Tool::Shape(crate::document::ShapeKind::Line)),
                 Key::A if plain => ed.set_tool(Tool::Shape(crate::document::ShapeKind::Arrow)),
+                Key::P if plain => ed.set_tool(Tool::Pen),
                 Key::I if plain => request = Some(CanvasRequest::InsertImage),
                 _ => {}
             }
@@ -600,6 +660,8 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
         }
         st.gesture = if space || resp.dragged_by(egui::PointerButton::Middle) {
             Some(Gesture::Pan { last: p })
+        } else if ed.tool == Tool::Pen {
+            slide_rect.contains(p).then(|| Gesture::Draw { points: vec![sp] })
         } else if ed.tool != Tool::Select {
             Some(Gesture::Create {
                 tool: ed.tool,
@@ -673,6 +735,17 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
                 };
             }
             Some(Gesture::Create { current, .. }) => *current = sp,
+            Some(Gesture::Draw { points }) => {
+                let point = (sp.0.clamp(0.0, SLIDE_W), sp.1.clamp(0.0, SLIDE_H));
+                let far_enough = points.last().is_none_or(|last| {
+                    let dx = point.0 - last.0;
+                    let dy = point.1 - last.1;
+                    (dx * dx + dy * dy).sqrt() * view.scale >= 1.25
+                });
+                if far_enough && points.len() < MAX_FREEHAND_POINTS {
+                    points.push(point);
+                }
+            }
             Some(Gesture::Marquee { start, current, base }) => {
                 *current = sp;
                 let r = Rect::from_points(*start, *current);
@@ -792,6 +865,9 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
             Some(Gesture::Create { tool, start, current }) => {
                 let dragged = (current.0 - start.0).abs().max((current.1 - start.1).abs()) * view.scale > 4.0;
                 create_object(ed, st, &painter, sv, tool, start, current, dragged);
+            }
+            Some(Gesture::Draw { points }) => {
+                insert_freehand(ed, &points, view.scale);
             }
             _ => {}
         }
@@ -965,6 +1041,12 @@ pub fn canvas_ui(ui: &mut Ui, ed: &mut Editor, st: &mut CanvasState, sv: &mut Se
                 ov.rect_stroke(r, 0.0, Stroke::new(1.0, ACCENT), StrokeKind::Inside);
             }
         }
+        Some(Gesture::Draw { points }) if points.len() >= 2 => {
+            ov.add(egui::Shape::line(
+                points.iter().map(|&(x, y)| view.pt(x, y)).collect(),
+                Stroke::new(2.0 * view.scale, Color32::from_gray(25)),
+            ));
+        }
         _ => {}
     }
 
@@ -1043,6 +1125,40 @@ mod tests {
     fn resize_never_inverts() {
         let r = resize_box(Rect::new(0.0, 0.0, 10.0, 10.0), (1, 0), (-50.0, 0.0), false);
         assert_eq!(r.w, MIN_EXTENT);
+    }
+
+    #[test]
+    fn freehand_simplification_preserves_ends_and_corners() {
+        let straight: Vec<_> = (0..100).map(|x| (x as f32, 0.0)).collect();
+        assert_eq!(simplify_freehand(&straight, 0.1), [(0.0, 0.0), (99.0, 0.0)]);
+        let corner = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
+        assert_eq!(simplify_freehand(&corner, 0.1), corner);
+    }
+
+    #[test]
+    fn freehand_hit_test_follows_stroke_not_bounding_box() {
+        let mut ed = Editor::new(crate::document::Document::new(), None);
+        let mut shape = Shape::new(ShapeKind::Freehand);
+        let rect = shape
+            .set_freehand_points(&[(10.0, 10.0), (110.0, 10.0), (110.0, 110.0)])
+            .unwrap();
+        let id = ed.insert_object(ObjectKind::Shape(shape), rect);
+        assert_eq!(hit_test(&ed, (30.0, 11.0), 2.0), Some(id));
+        assert_eq!(hit_test(&ed, (55.0, 55.0), 2.0), None);
+    }
+
+    #[test]
+    fn inserting_freehand_is_undoable_and_keeps_pen_active() {
+        let mut ed = Editor::new(crate::document::Document::new(), None);
+        ed.set_tool(Tool::Pen);
+        let id = insert_freehand(&mut ed, &[(10.0, 10.0), (20.0, 20.0), (30.0, 10.0)], 2.0).unwrap();
+        assert_eq!(ed.tool, Tool::Pen);
+        assert!(ed.selection.is_empty());
+        assert!(matches!(ed.object(id).map(|o| &o.kind), Some(ObjectKind::Shape(s)) if s.kind == ShapeKind::Freehand));
+        ed.undo();
+        assert!(ed.object(id).is_none());
+        ed.redo();
+        assert!(ed.object(id).is_some());
     }
 
     #[test]
