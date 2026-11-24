@@ -39,6 +39,7 @@ printf '%s  %s\n' "$sum" "$asset" > "$tmp/release/SHA256SUMS"
 cat > "$tmp/mock-bin/curl" <<'MOCK_CURL'
 #!/bin/sh
 set -eu
+[ "${BEAMERX_TEST_CURL_FAIL:-0}" != 1 ] || exit 22
 url=
 out=
 while [ "$#" -gt 0 ]; do
@@ -60,4 +61,16 @@ PATH="$tmp/mock-bin:$PATH" \
 
 [ -x "$tmp/bin/beamerx" ]
 [ "$("$tmp/bin/beamerx" --version)" = 'beamerx installer-test' ]
+
+if BEAMERX_TEST_CURL_FAIL=1 \
+    BEAMERX_INSTALL_DIR="$tmp/failed-bin" \
+    PATH="$tmp/mock-bin:$PATH" \
+    sh install.sh >"$tmp/failed.out" 2>"$tmp/failed.err"
+then
+    printf 'installer unexpectedly accepted a failed download\n' >&2
+    exit 1
+fi
+grep -q 'could not download release asset' "$tmp/failed.err"
+[ ! -e "$tmp/failed-bin/beamerx" ]
+
 printf 'installer test passed for %s\n' "$target"

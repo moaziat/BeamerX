@@ -46,6 +46,17 @@ case $VERSION in
     *) fail 'BEAMERX_VERSION must be "latest" or a tag such as v0.1.0' ;;
 esac
 
+download() {
+    url=$1
+    output=$2
+    description=$3
+    if ! curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+        "$url" --output "$output"
+    then
+        fail "could not download $description. Check that https://github.com/${REPOSITORY}/releases has a public $VERSION release for $target"
+    fi
+}
+
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beamerx-install.XXXXXX")
 cleanup() {
     rm -rf "$tmp"
@@ -53,10 +64,8 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 printf 'Downloading BeamerX for %s...\n' "$target"
-curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-    "$base/$asset" --output "$tmp/$asset"
-curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-    "$base/SHA256SUMS" --output "$tmp/SHA256SUMS"
+download "$base/$asset" "$tmp/$asset" "release asset $asset"
+download "$base/SHA256SUMS" "$tmp/SHA256SUMS" 'release checksums'
 
 expected=$(awk -v name="$asset" '$2 == name { print $1; exit }' "$tmp/SHA256SUMS")
 [ -n "$expected" ] || fail "release checksum is missing for $asset"

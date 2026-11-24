@@ -18,7 +18,7 @@ Status: **MVP 0.1** (see [scope](#scope-of-010) and
 | | |
 |---|---|
 | OS | Linux with glibc 2.35+ on x86_64 or ARM64 (X11/XWayland), or macOS 11+ on Apple Silicon. |
-| Rust | 1.85 or newer (`rustup` stable) |
+| Rust | **Not required for the installer.** Source builds need Rust 1.85 or newer (`rustup` stable). |
 | LaTeX | **[Tectonic](https://tectonic-typesetting.github.io/)** (recommended: `brew install tectonic`) or a TeX Live/MacTeX `xelatex`/`lualatex`/`pdflatex`. Needed for math previews and PDF export; everything else works without it. Tectonic downloads the LaTeX packages it needs on first use (network required once). |
 
 BeamerX looks for the engine on `PATH` and in `/opt/homebrew/bin`,
@@ -33,11 +33,12 @@ Rust or a compiler:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://raw.githubusercontent.com/moaziat/BeamerX/main/install.sh | sh
+  https://raw.githubusercontent.com/moaziat/BeamerX/refs/heads/main/install.sh | sh
 ```
 
 The installer detects Linux/macOS and x86_64/ARM64, downloads the matching
-GitHub Release asset, and verifies it against the published SHA-256 checksum
+public [GitHub Release](https://github.com/moaziat/BeamerX/releases/latest)
+asset, and verifies it against the published SHA-256 checksum
 before installing. Set `BEAMERX_INSTALL_DIR` to choose another destination or
 `BEAMERX_VERSION=v0.1.0` to install a specific release.
 
@@ -47,7 +48,19 @@ Debian, Arch, GNOME, and KDE desktop installations. LaTeX remains optional.
 
 ## Build and run from source
 
+The release installer above does not need Rust. Developers who want to build
+BeamerX from source can install Rust and Cargo with the official `rustup`
+installer first:
+
 ```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Then clone the repository and run:
+
+```sh
+git clone https://github.com/moaziat/BeamerX.git
+cd BeamerX
 cargo run --release                 # start the editor
 cargo run --release -- deck.beamerx # open a project
 scripts/bundle-macos.sh             # build dist/BeamerX.app (shipping build)
