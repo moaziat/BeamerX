@@ -30,7 +30,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/moaziat/
 BeamerX is installed to `~/.local/bin/beamerx`. The installer prints the one
 PATH command to run if `~/.local/bin` is not already available in your shell.
 Set `BEAMERX_INSTALL_DIR` for a different destination or
-`BEAMERX_VERSION=v0.1.0` for a specific release.
+`BEAMERX_VERSION=v0.1.1` for a specific release.
 
 ## Highlights
 

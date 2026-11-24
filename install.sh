@@ -43,7 +43,7 @@ asset=beamerx-${target}.tar.gz
 case $VERSION in
     latest) base=https://github.com/${REPOSITORY}/releases/latest/download ;;
     v*) base=https://github.com/${REPOSITORY}/releases/download/${VERSION} ;;
-    *) fail 'BEAMERX_VERSION must be "latest" or a tag such as v0.1.0' ;;
+    *) fail 'BEAMERX_VERSION must be "latest" or a tag such as v0.1.1' ;;
 esac
 
 download() {
