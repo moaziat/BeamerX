@@ -320,11 +320,13 @@ fn hayro_rasterize_alpha(pdf: &[u8], index: usize, scale: f32) -> Result<AlphaMa
     // background. Equations are dark-on-white; turn perceived brightness
     // into coverage while intentionally discarding colour, like the macOS
     // path. Integer Rec. 709 weights preserve anti-aliased edge smoothness.
-    let alpha = pixmap
-        .data_as_u8_slice()
-        .chunks_exact(4)
-        .map(|rgba| {
-            let luminance = (54 * u32::from(rgba[0]) + 183 * u32::from(rgba[1]) + 19 * u32::from(rgba[2]) + 128) >> 8;
+    let rgba = pixmap.data_as_u8_slice();
+    debug_assert_eq!(rgba.len() % 4, 0);
+    let alpha = (0..rgba.len())
+        .step_by(4)
+        .map(|i| {
+            let luminance =
+                (54 * u32::from(rgba[i]) + 183 * u32::from(rgba[i + 1]) + 19 * u32::from(rgba[i + 2]) + 128) >> 8;
             (255 - luminance) as u8
         })
         .collect();
