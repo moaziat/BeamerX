@@ -17,7 +17,6 @@ pub enum Icon {
     Delete,
     TextBox,
     Picture,
-    Pen,
     Shapes,
     Rectangle,
     RoundedRectangle,
@@ -141,24 +140,6 @@ pub fn paint(p: &Painter, r: Rect, icon: Icon, c: Color32) {
                 Stroke::NONE,
             ));
             p.circle_filled(at(0.7, 0.34), s * 0.07, c);
-        }
-        Icon::Pen => {
-            p.add(Shape::line(
-                vec![
-                    at(0.08, 0.72),
-                    at(0.23, 0.48),
-                    at(0.38, 0.7),
-                    at(0.55, 0.3),
-                    at(0.72, 0.52),
-                    at(0.92, 0.18),
-                ],
-                PathStroke::new(w * 1.25, c),
-            ));
-            p.add(Shape::convex_polygon(
-                vec![at(0.82, 0.12), at(0.96, 0.04), at(0.92, 0.2)],
-                c,
-                Stroke::NONE,
-            ));
         }
         Icon::Shapes => {
             p.rect_stroke(rect(0.08, 0.12, 0.56, 0.5), 1.5, st, egui::StrokeKind::Middle);
@@ -432,7 +413,6 @@ fn accessible_name(icon: Icon) -> &'static str {
         Icon::Delete => "Delete",
         Icon::TextBox => "Text box",
         Icon::Picture => "Picture",
-        Icon::Pen => "Pen",
         Icon::Shapes => "Shapes",
         Icon::Rectangle => "Rectangle",
         Icon::RoundedRectangle => "Rounded rectangle",

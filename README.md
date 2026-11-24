@@ -30,7 +30,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/moaziat/
 BeamerX is installed to `~/.local/bin/beamerx`. The installer prints the one
 PATH command to run if `~/.local/bin` is not already available in your shell.
 Set `BEAMERX_INSTALL_DIR` for a different destination or
-`BEAMERX_VERSION=v0.1.1` for a specific release.
+`BEAMERX_VERSION=v0.1.2` for a specific release.
 
 ## Highlights
 
@@ -39,8 +39,7 @@ Set `BEAMERX_INSTALL_DIR` for a different destination or
   bullets, numbering, and outline levels.
 - Live inline and display LaTeX using `$...$` and `$$...$$`.
 - Images with fit, aspect sizing, resize controls, and front/back ordering.
-- Shapes, arrows, line ends, dash styles, 3D-style primitives, and freehand
-  vector drawing with the Pen tool (`P`).
+- Shapes, arrows, line ends, dash styles, and 3D-style primitives.
 - Multi-selection, alignment, snapping, copy/paste, undo/redo, zoom, and pan.
 - Editable `.beamerx` projects with packaged, deduplicated image assets.
 - Full-screen presentation plus self-contained Beamer and PDF export.
@@ -52,10 +51,11 @@ Set `BEAMERX_INSTALL_DIR` for a different destination or
 - Write `$E = mc^2$` inline or `$$\int_0^1 f(x)\,dx$$` as display math.
 - Drag PNG/JPEG files onto a slide or use **Insert › Picture**.
 - Add shapes from **Home › Drawing** or **Insert › Shapes**.
-- Press `P` and drag to draw editable vector strokes.
 - Use **Home › New Slide** and **Layout** to structure the deck.
 - Save with `⌘S` and export from the **File** menu.
 - Present with `⌘↩`; use arrows, space, or click to advance.
+- Standard shortcuts include `⌘N/O/S`, `⌘Z`/`⇧⌘Z`, `⌘X/C/V`, `⌘A`, `⌘D`,
+  and `⌘B/I` while editing text. Use Ctrl instead of Command on Linux.
 
 ## LaTeX
 

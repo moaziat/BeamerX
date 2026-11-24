@@ -16,7 +16,7 @@ use crate::renderer::{self, PaintOpts, Services, View, textures::TextureCache};
 use crate::ui::icons::{self, Icon};
 use crate::{commands::Command, document::ShapeKind, export};
 use anyhow::Result;
-use egui::{Color32, RichText, ViewportCommand};
+use egui::{Color32, Key, KeyboardShortcut, Modifiers, RichText, ViewportCommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +25,41 @@ use std::time::{Duration, Instant};
 
 const AUTOSAVE_AFTER: Duration = Duration::from_secs(30);
 const TOAST_FOR: Duration = Duration::from_secs(5);
+const CMD: Modifiers = Modifiers::COMMAND;
+const CMD_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
+const CMD_ALT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT);
+
+// The native macOS menu owns these accelerators. This table is the fallback
+// for Linux and for any platform where native menu installation fails.
+// Specific modified variants must precede their plain Command counterpart.
+const APP_SHORTCUTS: &[(KeyboardShortcut, MenuAction)] = &[
+    (KeyboardShortcut::new(CMD_SHIFT, Key::S), MenuAction::SaveAs),
+    (KeyboardShortcut::new(CMD_SHIFT, Key::Z), MenuAction::Redo),
+    (KeyboardShortcut::new(CMD_SHIFT, Key::E), MenuAction::ExportPdf),
+    (KeyboardShortcut::new(CMD_SHIFT, Key::N), MenuAction::NewSlide),
+    (KeyboardShortcut::new(CMD_ALT, Key::T), MenuAction::InsertText),
+    (KeyboardShortcut::new(CMD_ALT, Key::E), MenuAction::InsertMath),
+    (KeyboardShortcut::new(CMD_ALT, Key::I), MenuAction::InsertImage),
+    (KeyboardShortcut::new(CMD, Key::Q), MenuAction::Quit),
+    (KeyboardShortcut::new(CMD, Key::N), MenuAction::New),
+    (KeyboardShortcut::new(CMD, Key::O), MenuAction::Open),
+    (KeyboardShortcut::new(CMD, Key::S), MenuAction::Save),
+    (KeyboardShortcut::new(CMD, Key::E), MenuAction::ExportBeamer),
+    (KeyboardShortcut::new(CMD, Key::Z), MenuAction::Undo),
+    (KeyboardShortcut::new(CMD, Key::Y), MenuAction::Redo),
+    (KeyboardShortcut::new(CMD, Key::X), MenuAction::Cut),
+    (KeyboardShortcut::new(CMD, Key::C), MenuAction::Copy),
+    (KeyboardShortcut::new(CMD, Key::V), MenuAction::Paste),
+    (KeyboardShortcut::new(CMD, Key::D), MenuAction::Duplicate),
+    (KeyboardShortcut::new(CMD, Key::A), MenuAction::SelectAll),
+    (KeyboardShortcut::new(CMD, Key::Enter), MenuAction::Present),
+];
+
+fn take_app_shortcut(input: &mut egui::InputState) -> Option<MenuAction> {
+    APP_SHORTCUTS
+        .iter()
+        .find_map(|(shortcut, action)| input.consume_shortcut(shortcut).then_some(*action))
+}
 
 enum IoMsg {
     Imported {
@@ -790,6 +825,13 @@ impl BeamerApp {
         }
     }
 
+    fn handle_keyboard_shortcuts(&mut self) {
+        let action = self.ctx.input_mut(take_app_shortcut);
+        if let Some(action) = action {
+            self.on_action(action);
+        }
+    }
+
     /// Is the caret in a text box on the slide?
     fn slide_text_focused(&self) -> bool {
         self.ed.editing_text.is_some_and(|id| {
@@ -1054,14 +1096,20 @@ impl BeamerApp {
 
     fn tab_home(&mut self, ui: &mut egui::Ui, insert_image: &mut bool) {
         group(ui, "Clipboard", |ui| {
-            if icons::big(ui, Icon::Paste, "Paste").clicked() {
+            if icons::big(ui, Icon::Paste, "Paste")
+                .on_hover_text("Paste (⌘V)")
+                .clicked()
+            {
                 self.on_action(MenuAction::Paste);
             }
             ui.vertical(|ui| {
-                if icons::small(ui, Icon::Cut, "Cut").clicked() {
+                if icons::small(ui, Icon::Cut, "Cut").on_hover_text("Cut (⌘X)").clicked() {
                     self.on_action(MenuAction::Cut);
                 }
-                if icons::small(ui, Icon::Copy, "Copy").clicked() {
+                if icons::small(ui, Icon::Copy, "Copy")
+                    .on_hover_text("Copy (⌘C)")
+                    .clicked()
+                {
                     self.on_action(MenuAction::Copy);
                 }
             });
@@ -1072,12 +1120,6 @@ impl BeamerApp {
         self.font_group(ui);
         self.paragraph_group(ui);
         group(ui, "Drawing", |ui| {
-            if icons::big_toggle(ui, Icon::Pen, "Pen", self.ed.tool == Tool::Pen)
-                .on_hover_text("Draw freehand vector strokes on the slide (P)")
-                .clicked()
-            {
-                self.ed.set_tool(Tool::Pen);
-            }
             self.shape_gallery(ui, false);
             if icons::big(ui, Icon::Picture, "Picture…").clicked() {
                 *insert_image = true;
@@ -1436,12 +1478,6 @@ impl BeamerApp {
             }
         });
         group(ui, "Shapes", |ui| {
-            if icons::big_toggle(ui, Icon::Pen, "Draw", self.ed.tool == Tool::Pen)
-                .on_hover_text("Draw freehand vector strokes on the slide (P)")
-                .clicked()
-            {
-                self.ed.set_tool(Tool::Pen);
-            }
             self.shape_gallery(ui, true);
         });
         ui.label(
@@ -1930,6 +1966,9 @@ impl eframe::App for BeamerApp {
             }
             self.on_action(a);
         }
+        if self.presenting.is_none() && self.menu.is_none() {
+            self.handle_keyboard_shortcuts();
+        }
         self.math.set_preamble(&self.ed.doc.meta.preamble);
         let (_, next) = self.math.pump(now);
         if let Some(d) = next {
@@ -2095,5 +2134,46 @@ impl eframe::App for BeamerApp {
         if self.bench.is_none() {
             self.discard_recovery();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shortcut(modifiers: Modifiers, key: Key) -> Option<MenuAction> {
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        });
+        let action = ctx.input_mut(take_app_shortcut);
+        let mut output = ctx.end_pass();
+        output.textures_delta.clear();
+        action
+    }
+
+    #[test]
+    fn standard_shortcuts_route_to_actions() {
+        let linux_ctrl = Modifiers {
+            ctrl: true,
+            command: true,
+            ..Default::default()
+        };
+        assert_eq!(shortcut(CMD, Key::S), Some(MenuAction::Save));
+        assert_eq!(shortcut(linux_ctrl, Key::S), Some(MenuAction::Save));
+        assert_eq!(shortcut(CMD_SHIFT, Key::S), Some(MenuAction::SaveAs));
+        assert_eq!(shortcut(CMD, Key::Z), Some(MenuAction::Undo));
+        assert_eq!(shortcut(CMD_SHIFT, Key::Z), Some(MenuAction::Redo));
+        assert_eq!(shortcut(CMD, Key::Y), Some(MenuAction::Redo));
+        assert_eq!(shortcut(CMD, Key::C), Some(MenuAction::Copy));
+        assert_eq!(shortcut(CMD, Key::V), Some(MenuAction::Paste));
+        assert_eq!(shortcut(CMD, Key::A), Some(MenuAction::SelectAll));
     }
 }

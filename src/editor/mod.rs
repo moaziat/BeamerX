@@ -21,7 +21,6 @@ use std::path::PathBuf;
 pub enum Tool {
     Select,
     Text,
-    Pen,
     Shape(ShapeKind),
 }
 
@@ -704,7 +703,6 @@ pub fn new_object_kind(tool: Tool) -> Option<ObjectKind> {
     Some(match tool {
         Tool::Select => return None,
         Tool::Text => ObjectKind::Text(Default::default()),
-        Tool::Pen => return None,
         Tool::Shape(k) => ObjectKind::Shape(Shape::new(k)),
     })
 }
